@@ -9,9 +9,18 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1128.0",
+    "@aws-sdk/s3-request-presigner": "^3.1128.0",
+    "@prisma/client": "^5.22.0",
+    "argon2": "^0.45.1",
+    "jose": "^6.2.12",
     "next": "16.3.4",
+    "prisma": "^5.22.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -21,6 +30,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
     "tailwindcss": "^4",
+    "tsx": "^4.23.13",
     "typescript": "^5"
   }
 }
