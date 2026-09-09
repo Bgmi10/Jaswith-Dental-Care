@@ -1,5 +1,6 @@
 import Link from "next/link";
 import prisma from "@/prisma";
+export const dynamic = "force-dynamic";
 import { getClinic } from "@/src/lib/clinic";
 import { ImageUploadField } from "@/src/components/admin/ImageUploadField";
 import {
