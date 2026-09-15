@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Jaswith Dental Care — Clinic Manager</title>
+<style>
+:root{--p:#176b87;--bg:#f3f6f8;--card:#fff;--text:#17202a;--muted:#687780;--line:#dbe2e6;--danger:#b42318;--ok:#16794a}
+*{box-sizing:border-box}body{margin:0;font:14px Arial,sans-serif;background:var(--bg);color:var(--text)}
+header{background:var(--p);color:#fff;padding:16px 20px;position:sticky;top:0;z-index:5}header h1{margin:0;font-size:21px}header small{opacity:.9}
+nav{display:flex;gap:6px;overflow:auto;background:#fff;border-bottom:1px solid var(--line);padding:8px 12px;position:sticky;top:69px;z-index:4}
+nav button{background:#eef3f5;color:#17313c;border:0;border-radius:8px;padding:9px 13px;white-space:nowrap}nav button.active{background:var(--p);color:#fff}
+main{max-width:1250px;margin:18px auto;padding:0 14px}.page{display:none}.page.active{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:15px;box-shadow:0 2px 8px #00000009}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+label{display:block;font-weight:bold;font-size:12px;color:#3d4b52;margin-bottom:5px}input,select,textarea{width:100%;padding:9px;border:1px solid #cbd5da;border-radius:7px;background:#fff}textarea{min-height:85px;resize:vertical}
+button{border:0;border-radius:7px;padding:9px 13px;background:var(--p);color:#fff;cursor:pointer;margin:3px}button.secondary{background:#687780}button.danger{background:var(--danger)}button.ok{background:var(--ok)}
+.actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.muted{color:var(--muted)}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--line);vertical-align:top}.scroll{overflow:auto}
+.statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.stat{padding:15px;border-radius:10px;background:#fff;border:1px solid var(--line)}.stat b{font-size:25px;display:block;margin-top:5px}
+.badge{display:inline-block;border-radius:20px;padding:4px 8px;background:#eef3f5;font-size:12px}.badge.ok{background:#e8f6ef;color:#16794a}.badge.warn{background:#fff3d6;color:#815900}
+.toothgrid{display:grid;grid-template-columns:repeat(16,1fr);gap:5px}.tooth{border:1px solid var(--line);padding:8px 2px;border-radius:6px;text-align:center;background:#fafcfd}.tooth input{padding:4px;margin-top:4px}
+.modal{position:fixed;inset:0;background:#0007;display:none;align-items:center;justify-content:center;padding:14px;z-index:10}.modal.open{display:flex}.modalbox{background:#fff;max-width:1000px;width:100%;max-height:92vh;overflow:auto;border-radius:12px;padding:18px}
+@media(max-width:700px){.toothgrid{grid-template-columns:repeat(8,1fr)}header{position:static}nav{top:0}}
+</style>
+</head>
+<body>
+<header><h1>Jaswith Dental Care</h1><small>Dr. J. Sailakshmi, MDS • Prosthodontist & Implantologist • Clinic Management</small></header>
+<nav id="nav">
+<button data-page="dashboard" class="active">Dashboard</button><button data-page="patients">Patients</button><button data-page="appointments">Appointments</button><button data-page="clinical">Clinical</button><button data-page="billing">Billing</button><button data-page="prescriptions">Prescriptions</button><button data-page="files">Files</button><button data-page="reports">Reports</button><button data-page="backup">Backup</button>
+</nav>
+<main>
+<section id="dashboard" class="page active">
+<div class="statgrid">
+<div class="stat">Patients<b id="sPatients">0</b></div><div class="stat">Today's appointments<b id="sToday">0</b></div><div class="stat">Pending payments<b id="sPending">₹0</b></div><div class="stat">This month's revenue<b id="sRevenue">₹0</b></div>
+</div>
+<div class="card"><h2>Quick actions</h2><div class="actions"><button onclick="newPatient()">+ New patient</button><button onclick="newAppointment()">+ Appointment</button><button onclick="newBill()">+ Bill / Payment</button><button onclick="newClinical()">+ Clinical entry</button></div></div>
+<div class="card"><h2>Upcoming appointments</h2><div id="dashAppts"></div></div>
+</section>
+
+<section id="patients" class="page">
+<div class="card"><div class="actions"><button onclick="newPatient()">+ New patient</button><input id="patientSearch" placeholder="Search name / phone / patient ID" oninput="renderPatients()" style="flex:1;min-width:220px"></div></div>
+<div class="card scroll"><table><thead><tr><th>ID</th><th>Patient</th><th>Contact</th><th>Last visit</th><th>Actions</th></tr></thead><tbody id="patientRows"></tbody></table></div>
+</section>
+
+<section id="appointments" class="page">
+<div class="card"><div class="actions"><button onclick="newAppointment()">+ New appointment</button><select id="apptFilter" onchange="renderAppointments()"><option value="all">All</option><option value="today">Today</option><option value="upcoming">Upcoming</option><option value="completed">Completed</option></select></div></div>
+<div class="card scroll"><table><thead><tr><th>Date/time</th><th>Patient</th><th>Reason</th><th>Status</th><th>Actions</th></tr></thead><tbody id="apptRows"></tbody></table></div>
+</section>
+
+<section id="clinical" class="page">
+<div class="card"><div class="actions"><button onclick="newClinical()">+ Clinical entry</button><input id="clinicalSearch" placeholder="Search patient" oninput="renderClinical()" style="flex:1;min-width:220px"></div></div>
+<div class="card scroll"><table><thead><tr><th>Date</th><th>Patient</th><th>Tooth</th><th>Procedure / diagnosis</th><th>Notes</th><th>Actions</th></tr></thead><tbody id="clinicalRows"></tbody></table></div>
+</section>
+
+<section id="billing" class="page">
+<div class="card"><div class="actions"><button onclick="newBill()">+ New bill</button><input id="billSearch" placeholder="Search patient" oninput="renderBills()" style="flex:1;min-width:220px"></div></div>
+<div class="card scroll"><table><thead><tr><th>Date</th><th>Bill #</th><th>Patient</th><th>Items</th><th>Total</th><th>Paid</th><th>Balance</th><th>Actions</th></tr></thead><tbody id="billRows"></tbody></table></div>
+</section>
+
+<section id="prescriptions" class="page">
+<div class="card"><div class="actions"><button onclick="newPrescription()">+ Prescription</button><input id="rxSearch" placeholder="Search patient" oninput="renderRx()" style="flex:1;min-width:220px"></div></div>
+<div class="card scroll"><table><thead><tr><th>Date</th><th>Patient</th><th>Medicines / instructions</th><th>Actions</th></tr></thead><tbody id="rxRows"></tbody></table></div>
+</section>
+
+<section id="files" class="page">
+<div class="card"><h2>Patient documents</h2><p class="muted">Attach X-rays, photographs, scans, consent forms and reports to a patient. Prototype limit: 8 MB per file.</p><div class="actions"><select id="filePatient"></select><input id="fileInput" type="file" multiple><button onclick="attachFiles()">Attach</button></div></div>
+<div class="card scroll"><table><thead><tr><th>Patient</th><th>File</th><th>Added</th><th>Action</th></tr></thead><tbody id="fileRows"></tbody></table></div>
+</section>
+
+<section id="reports" class="page">
+<div class="card"><h2>Clinic reports</h2><div class="statgrid"><div class="stat">Total patients<b id="rPatients">0</b></div><div class="stat">Completed visits<b id="rVisits">0</b></div><div class="stat">Total billed<b id="rBilled">₹0</b></div><div class="stat">Total collected<b id="rCollected">₹0</b></div><div class="stat">Outstanding<b id="rOutstanding">₹0</b></div></div></div>
+<div class="card"><h3>Procedure summary</h3><div id="procedureReport"></div></div>
+</section>
+
+<section id="backup" class="page">
+<div class="card"><h2>Backup & restore</h2><p>Export all clinic data as a JSON backup. Keep backups in a secure location. Restore replaces the current local data.</p><button onclick="exportData()">Download backup</button><input id="restoreInput" type="file" accept=".json" onchange="restoreData(event)"></div>
+<div class="card"><h3>Clinic setup</h3><div class="grid"><div><label>Clinic name</label><input id="clinicName"></div><div><label>Doctor</label><input id="doctorName"></div><div><label>Default currency</label><input id="currency" value="₹"></div></div><button onclick="saveSettings()">Save settings</button></div>
+<div class="card"><h3>Privacy notice</h3><p class="muted">This version is a local prototype. Patient information is sensitive clinical data. Before real-world deployment, use authenticated accounts, encrypted storage and backups, role-based access, audit logging, secure hosting and a privacy/compliance review.</p></div>
+</section>
+</main>
+
+<div class="modal" id="modal"><div class="modalbox"><div class="actions" style="justify-content:space-between"><h2 id="modalTitle">Form</h2><button class="secondary" onclick="closeModal()">Close</button></div><div id="modalBody"></div></div></div>
+
+<script>
+const KEY="JDC_CLINIC_MANAGER_V2";
+let db=JSON.parse(localStorage.getItem(KEY)||'null')||{patients:[],appointments:[],clinical:[],bills:[],prescriptions:[],files:[],settings:{clinicName:"Jaswith Dental Care",doctor:"Dr. J. Sailakshmi, MDS",currency:"₹"}};
+const $=id=>document.getElementById(id), uid=()=>crypto.randomUUID(), today=()=>new Date().toISOString().slice(0,10);
+const money=n=>(db.settings.currency||"₹")+Number(n||0).toLocaleString("en-IN",{maximumFractionDigits:2});
+function save(){localStorage.setItem(KEY,JSON.stringify(db));refresh()}
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function pname(id){return db.patients.find(p=>p.id===id)?.name||"Unknown"}
+function showPage(id){document.querySelectorAll(".page").forEach(x=>x.classList.remove("active"));$(id).classList.add("active");document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x.dataset.page===id));refresh()}
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>showPage(b.dataset.page));
+function openModal(title,body){$("modalTitle").textContent=title;$("modalBody").innerHTML=body;$("modal").classList.add("open")}
+function closeModal(){$("modal").classList.remove("open")}
+function patientOptions(){return db.patients.map(p=>`<option value="${p.id}">${esc(p.patientNo||"")} — ${esc(p.name)}</option>`).join("")}
+
+function newPatient(p={}){
+openModal(p.id?"Edit patient":"New patient",`<div class="grid">
+<div><label>Patient ID</label><input id="fPatientNo" value="${esc(p.patientNo||"")}"></div><div><label>Name *</label><input id="fName" value="${esc(p.name||"")}"></div>
+<div><label>DOB</label><input id="fDob" type="date" value="${esc(p.dob||"")}"></div><div><label>Gender</label><select id="fGender"><option></option><option ${p.gender==="Female"?"selected":""}>Female</option><option ${p.gender==="Male"?"selected":""}>Male</option><option>Other</option></select></div>
+<div><label>Phone</label><input id="fPhone" value="${esc(p.phone||"")}"></div><div><label>Email</label><input id="fEmail" value="${esc(p.email||"")}"></div>
+<div><label>Occupation</label><input id="fOccupation" value="${esc(p.occupation||"")}"></div><div><label>Emergency contact</label><input id="fEmergency" value="${esc(p.emergency||"")}"></div>
+</div><h3>Medical history</h3><div class="grid"><div><label>Medical conditions</label><textarea id="fMedical">${esc(p.medical||"")}</textarea></div><div><label>Allergies</label><textarea id="fAllergies">${esc(p.allergies||"")}</textarea></div><div><label>Current medications</label><textarea id="fMeds">${esc(p.meds||"")}</textarea></div><div><label>Relevant history / precautions</label><textarea id="fPrecautions">${esc(p.precautions||"")}</textarea></div></div>
+<h3>Dental history</h3><textarea id="fDental">${esc(p.dental||"")}</textarea><h3>Consent / notes</h3><textarea id="fNotes">${esc(p.notes||"")}</textarea>
+<div class="actions"><button onclick="savePatient('${p.id||""}')">Save patient</button></div>`);
+}
+function savePatient(id){
+let p=db.patients.find(x=>x.id===id)||{id:uid(),createdAt:new Date().toISOString()};
+Object.assign(p,{patientNo:$("fPatientNo").value.trim(),name:$("fName").value.trim(),dob:$("fDob").value,gender:$("fGender").value,phone:$("fPhone").value,email:$("fEmail").value,occupation:$("fOccupation").value,emergency:$("fEmergency").value,medical:$("fMedical").value,allergies:$("fAllergies").value,meds:$("fMeds").value,precautions:$("fPrecautions").value,dental:$("fDental").value,notes:$("fNotes").value});
+if(!p.name){alert("Patient name is required.");return} if(!id)db.patients.push(p);save();closeModal()
+}
+function renderPatients(){
+let q=($("patientSearch")?.value||"").toLowerCase();let arr=db.patients.filter(p=>(p.name+" "+p.phone+" "+p.patientNo).toLowerCase().includes(q));
+$("patientRows").innerHTML=arr.map(p=>`<tr><td>${esc(p.patientNo||"—")}</td><td><b>${esc(p.name)}</b><br><span class="muted">${esc(p.gender||"")} ${esc(p.dob||"")}</span></td><td>${esc(p.phone||"")}<br>${esc(p.email||"")}</td><td>${lastVisit(p.id)}</td><td><button onclick="newPatient(db.patients.find(x=>x.id==='${p.id}'))">Edit</button><button onclick="patientChart('${p.id}')">Chart</button><button class="danger" onclick="deletePatient('${p.id}')">Delete</button></td></tr>`).join("")||`<tr><td colspan=5 class=muted>No patients</td></tr>`
+}
+function lastVisit(id){let a=db.appointments.filter(x=>x.patientId===id&&x.status==="Completed").sort((a,b)=>b.dateTime.localeCompare(a.dateTime))[0];return a?a.dateTime.slice(0,10):"—"}
+function deletePatient(id){if(confirm("Delete this patient? Related records are retained but the patient name may become unavailable.")){db.patients=db.patients.filter(p=>p.id!==id);save()}}
+function patientChart(id){
+let p=db.patients.find(x=>x.id===id), c=db.clinical.filter(x=>x.patientId===id), b=db.bills.filter(x=>x.patientId===id), a=db.appointments.filter(x=>x.patientId===id);
+openModal("Patient chart — "+esc(p.name),`<div class="card"><b>${esc(p.patientNo||"")} • ${esc(p.phone||"")}</b><p>${esc(p.medical||"No medical history recorded")}</p><p><b>Allergies:</b> ${esc(p.allergies||"None recorded")}</p></div><h3>Clinical history</h3>${c.map(x=>`<div class="card"><b>${x.date} • Tooth ${esc(x.tooth||"—")}</b><br>${esc(x.procedure)}<p>${esc(x.notes)}</p></div>`).join("")||"<p class=muted>No clinical entries.</p>"}<h3>Billing</h3>${b.map(x=>`<div>${x.date} • ${esc(x.number)} • ${money(x.total)} • Paid ${money(x.paid)} • Balance ${money(x.total-x.paid)}</div>`).join("")||"<p class=muted>No bills.</p>"}<h3>Appointments</h3>${a.map(x=>`<div>${x.dateTime.replace("T"," ")} • ${esc(x.reason)} • ${esc(x.status)}</div>`).join("")}`)
+}
+
+function newAppointment(a={}){
+openModal("Appointment",`<div class="grid"><div><label>Patient</label><select id="aPatient">${patientOptions()}</select></div><div><label>Date & time</label><input id="aDate" type="datetime-local" value="${a.dateTime||new Date().toISOString().slice(0,16)}"></div><div><label>Reason</label><input id="aReason" value="${esc(a.reason||"")}" placeholder="Consultation / RCT / crown / denture..."></div><div><label>Status</label><select id="aStatus"><option>Scheduled</option><option>Confirmed</option><option>Completed</option><option>Cancelled</option><option>No-show</option></select></div></div><label>Notes</label><textarea id="aNotes">${esc(a.notes||"")}</textarea><button onclick="saveAppointment('${a.id||""}')">Save</button>`);
+if(a.patientId)$("aPatient").value=a.patientId;if(a.status)$("aStatus").value=a.status
+}
+function saveAppointment(id){let a=db.appointments.find(x=>x.id===id)||{id:uid()};Object.assign(a,{patientId:$("aPatient").value,dateTime:$("aDate").value,reason:$("aReason").value,status:$("aStatus").value,notes:$("aNotes").value});if(!id)db.appointments.push(a);save();closeModal()}
+function renderAppointments(){let f=$("apptFilter").value,arr=[...db.appointments].sort((a,b)=>a.dateTime.localeCompare(b.dateTime));if(f==="today")arr=arr.filter(a=>a.dateTime.slice(0,10)===today());if(f==="upcoming")arr=arr.filter(a=>a.dateTime>=new Date().toISOString().slice(0,16)&&a.status!=="Cancelled");if(f==="completed")arr=arr.filter(a=>a.status==="Completed");$("apptRows").innerHTML=arr.map(a=>`<tr><td>${a.dateTime.replace("T"," ")}</td><td>${esc(pname(a.patientId))}</td><td>${esc(a.reason)}</td><td><span class="badge ${a.status==="Completed"?"ok":a.status==="Cancelled"?"warn":""}">${esc(a.status)}</span></td><td><button onclick="newAppointment(db.appointments.find(x=>x.id==='${a.id}'))">Edit</button></td></tr>`).join("")}
+function newClinical(c={}){
+openModal("Clinical entry",`<div class="grid"><div><label>Patient</label><select id="cPatient">${patientOptions()}</select></div><div><label>Date</label><input id="cDate" type="date" value="${c.date||today()}"></div><div><label>Tooth / region</label><input id="cTooth" value="${esc(c.tooth||"")}" placeholder="e.g. 46, 11–21, full arch"></div><div><label>Procedure</label><input id="cProcedure" value="${esc(c.procedure||"")}" placeholder="RCT / crown / denture / implant..."></div><div><label>Diagnosis</label><input id="cDiagnosis" value="${esc(c.diagnosis||"")}"></div><div><label>Next visit</label><input id="cNext" type="date" value="${c.next||""}"></div></div><label>Clinical notes</label><textarea id="cNotes">${esc(c.notes||"")}</textarea><label>Materials / lab details</label><textarea id="cLab">${esc(c.lab||"")}</textarea><button onclick="saveClinical('${c.id||""}')">Save</button>`);
+if(c.patientId)$("cPatient").value=c.patientId
+}
+function saveClinical(id){let c=db.clinical.find(x=>x.id===id)||{id:uid()};Object.assign(c,{patientId:$("cPatient").value,date:$("cDate").value,tooth:$("cTooth").value,procedure:$("cProcedure").value,diagnosis:$("cDiagnosis").value,next:$("cNext").value,notes:$("cNotes").value,lab:$("cLab").value});if(!id)db.clinical.push(c);save();closeModal()}
+function renderClinical(){let q=($("clinicalSearch")?.value||"").toLowerCase();let arr=db.clinical.filter(c=>pname(c.patientId).toLowerCase().includes(q)).sort((a,b)=>b.date.localeCompare(a.date));$("clinicalRows").innerHTML=arr.map(c=>`<tr><td>${c.date}</td><td>${esc(pname(c.patientId))}</td><td>${esc(c.tooth||"—")}</td><td>${esc(c.procedure)}<br><span class=muted>${esc(c.diagnosis||"")}</span></td><td>${esc(c.notes)}</td><td><button onclick="newClinical(db.clinical.find(x=>x.id==='${c.id}'))">Edit</button></td></tr>`).join("")}
+function newBill(b={}){
+openModal("Bill / payment",`<div class="grid"><div><label>Patient</label><select id="bPatient">${patientOptions()}</select></div><div><label>Date</label><input id="bDate" type="date" value="${b.date||today()}"></div><div><label>Bill number</label><input id="bNumber" value="${esc(b.number||"B-"+(db.bills.length+1).toString().padStart(4,"0"))}"></div><div><label>Payment method</label><select id="bMethod"><option>Cash</option><option>UPI</option><option>Card</option><option>Bank transfer</option><option>Other</option></select></div></div><label>Items (one per line: Procedure | Amount)</label><textarea id="bItems">${esc(b.items||"")}</textarea><div class="grid"><div><label>Total</label><input id="bTotal" type="number" step="0.01" value="${b.total||0}"></div><div><label>Paid now / total paid</label><input id="bPaid" type="number" step="0.01" value="${b.paid||0}"></div></div><button onclick="saveBill('${b.id||""}')">Save</button>`);
+if(b.patientId)$("bPatient").value=b.patientId;if(b.method)$("bMethod").value=b.method
+}
+function saveBill(id){let b=db.bills.find(x=>x.id===id)||{id:uid()};Object.assign(b,{patientId:$("bPatient").value,date:$("bDate").value,number:$("bNumber").value,method:$("bMethod").value,items:$("bItems").value,total:+$("bTotal").value||0,paid:+$("bPaid").value||0});if(!id)db.bills.push(b);save();closeModal()}
+function renderBills(){let q=($("billSearch")?.value||"").toLowerCase();let arr=db.bills.filter(b=>pname(b.patientId).toLowerCase().includes(q)).sort((a,b)=>b.date.localeCompare(a.date));$("billRows").innerHTML=arr.map(b=>`<tr><td>${b.date}</td><td>${esc(b.number)}</td><td>${esc(pname(b.patientId))}</td><td>${esc(b.items).replace(/\n/g,"<br>")}</td><td>${money(b.total)}</td><td>${money(b.paid)}</td><td>${money(b.total-b.paid)}</td><td><button onclick="newBill(db.bills.find(x=>x.id==='${b.id}'))">Edit</button></td></tr>`).join("")}
+function newPrescription(r={}){
+openModal("Prescription",`<div class="grid"><div><label>Patient</label><select id="rPatient">${patientOptions()}</select></div><div><label>Date</label><input id="rDate" type="date" value="${r.date||today()}"></div></div><label>Prescription / medicines</label><textarea id="rText" placeholder="Medicine — strength — dose — frequency — duration">${esc(r.text||"")}</textarea><label>Instructions</label><textarea id="rInstructions">${esc(r.instructions||"")}</textarea><button onclick="saveRx('${r.id||""}')">Save</button><button class="secondary" onclick="printRx()">Print</button>`);
+if(r.patientId)$("rPatient").value=r.patientId
+}
+function saveRx(id){let r=db.prescriptions.find(x=>x.id===id)||{id:uid()};Object.assign(r,{patientId:$("rPatient").value,date:$("rDate").value,text:$("rText").value,instructions:$("rInstructions").value});if(!id)db.prescriptions.push(r);save();closeModal()}
+function printRx(){window.print()}
+function renderRx(){let q=($("rxSearch")?.value||"").toLowerCase();let arr=db.prescriptions.filter(r=>pname(r.patientId).toLowerCase().includes(q)).sort((a,b)=>b.date.localeCompare(a.date));$("rxRows").innerHTML=arr.map(r=>`<tr><td>${r.date}</td><td>${esc(pname(r.patientId))}</td><td>${esc(r.text).replace(/\n/g,"<br>")}<br><span class=muted>${esc(r.instructions)}</span></td><td><button onclick="newPrescription(db.prescriptions.find(x=>x.id==='${r.id}'))">Edit</button></td></tr>`).join("")}
+function attachFiles(){
+let pid=$("filePatient").value,fs=[...$("fileInput").files];if(!pid||!fs.length)return;
+fs.forEach(f=>{if(f.size>8*1024*1024){alert(f.name+" exceeds 8 MB.");return}let rd=new FileReader();rd.onload=()=>{db.files.push({id:uid(),patientId:pid,name:f.name,type:f.type,size:f.size,date:new Date().toISOString(),data:rd.result});save()};rd.readAsDataURL(f)});$("fileInput").value=""
+}
+function renderFiles(){$("filePatient").innerHTML=patientOptions();$("fileRows").innerHTML=db.files.map(f=>`<tr><td>${esc(pname(f.patientId))}</td><td>${esc(f.name)}</td><td>${f.date.slice(0,10)}</td><td><button onclick="downloadFile('${f.id}')">Open/download</button><button class=danger onclick="deleteFile('${f.id}')">Delete</button></td></tr>`).join("")}
+function downloadFile(id){let f=db.files.find(x=>x.id===id),a=document.createElement("a");a.href=f.data;a.download=f.name;a.click()}
+function deleteFile(id){if(confirm("Delete file?")){db.files=db.files.filter(f=>f.id!==id);save()}}
+function exportData(){let a=document.createElement("a"),blob=new Blob([JSON.stringify(db)],{type:"application/json"});a.href=URL.createObjectURL(blob);a.download="jaswith-dental-care-backup-"+today()+".json";a.click()}
+function restoreData(e){let f=e.target.files[0];if(!f)return;let r=new FileReader();r.onload=()=>{try{let x=JSON.parse(r.result);if(!x.patients)throw 0;if(confirm("Replace current local data with this backup?")){db=x;save();alert("Backup restored.")}}catch{alert("Invalid backup.")}};r.readAsText(f)}
+function saveSettings(){db.settings={clinicName:$("clinicName").value,doctor:$("doctorName").value,currency:$("currency").value||"₹"};save();alert("Settings saved.")}
+function refresh(){
+$("sPatients").textContent=db.patients.length;$("sToday").textContent=db.appointments.filter(a=>a.dateTime.slice(0,10)===today()&&a.status!=="Cancelled").length;
+$("sPending").textContent=money(db.bills.reduce((s,b)=>s+(b.total-b.paid),0));
+let ym=today().slice(0,7),bs=db.bills.filter(b=>b.date.startsWith(ym));$("sRevenue").textContent=money(bs.reduce((s,b)=>s+b.paid,0));
+renderPatients();renderAppointments();renderClinical();renderBills();renderRx();renderFiles();
+$("rPatients").textContent=db.patients.length;$("rVisits").textContent=db.appointments.filter(a=>a.status==="Completed").length;$("rBilled").textContent=money(db.bills.reduce((s,b)=>s+b.total,0));$("rCollected").textContent=money(db.bills.reduce((s,b)=>s+b.paid,0));$("rOutstanding").textContent=money(db.bills.reduce((s,b)=>s+b.total-b.paid,0));
+let proc={};db.clinical.forEach(c=>proc[c.procedure||"Unspecified"]=(proc[c.procedure||"Unspecified"]||0)+1);$("procedureReport").innerHTML=Object.entries(proc).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="card"><b>${esc(k)}</b> — ${v}</div>`).join("")||"<p class=muted>No clinical data.</p>";
+$("dashAppts").innerHTML=db.appointments.filter(a=>a.dateTime>=new Date().toISOString().slice(0,16)&&a.status!=="Cancelled").sort((a,b)=>a.dateTime.localeCompare(b.dateTime)).slice(0,8).map(a=>`<div class="card"><b>${a.dateTime.replace("T"," ")}</b> • ${esc(pname(a.patientId))}<br>${esc(a.reason)} <span class=badge>${a.status}</span></div>`).join("")||"<p class=muted>No upcoming appointments.</p>";
+}
+$("clinicName").value=db.settings.clinicName;$("doctorName").value=db.settings.doctor;$("currency").value=db.settings.currency;
+refresh();
+function escapePrint(){return}
+</script>
+</body></html>
