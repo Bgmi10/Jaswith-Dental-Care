@@ -250,12 +250,20 @@ export async function savePatient(formData: FormData) {
   if (!patientNumber) {
     throw new Error("Patient number is required");
   }
+  const ageValue = Number(formData.get("age"));
 
   const patientData = {
     patientNumber,
     firstName,
     lastName: optionalText(formData, "lastName"),
-    dateOfBirth: dateValue(text(formData, "dateOfBirth") || ""),
+  
+    age:
+      Number.isInteger(ageValue) &&
+      ageValue >= 0 &&
+      ageValue <= 150
+        ? ageValue
+        : null,
+  
     gender: optionalText(formData, "gender"),
     phone: text(formData, "phone"),
     alternatePhone: optionalText(formData, "alternatePhone"),
@@ -270,7 +278,7 @@ export async function savePatient(formData: FormData) {
     medicalAlerts: optionalText(formData, "medicalAlerts"),
     notes: optionalText(formData, "notes"),
   };
-
+  
   let patient;
 
   if (id) {

@@ -35,6 +35,7 @@ type Patient = {
   id: string;
   patientNumber: string;
   firstName: string;
+  age: number | null ;
   lastName: string | null;
   dateOfBirth: string | null;
   gender: string | null;
@@ -537,21 +538,18 @@ export default function AdminPage({
           </div>
 
           <div>
-            <label>DOB</label>
+  <label>Age</label>
 
-            <input
-              name="dateOfBirth"
-              type="date"
-              defaultValue={
-                patient?.dateOfBirth
-                  ? patient.dateOfBirth.slice(
-                      0,
-                      10
-                    )
-                  : ""
-              }
-            />
-          </div>
+  <input
+    name="age"
+    type="number"
+    min="0"
+    max="150"
+    step="1"
+    defaultValue={patient?.age ?? ""}
+    placeholder="Age"
+  />
+</div>
 
           <div>
             <label>
@@ -2142,13 +2140,9 @@ Paracetamol 500mg — SOS`}
                           <br />
 
                           <span className="muted">
-                            {
-                              patient.gender
-                            }{" "}
-                            {formatDate(
-                              patient.dateOfBirth
-                            )}
-                          </span>
+  {patient.gender || "—"}{" "}
+  {patient.age != null ? `${patient.age} yrs` : ""}
+</span>
                         </td>
 
                         <td>
