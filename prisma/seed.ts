@@ -1,3 +1,4 @@
+import { signPassword } from "@/src/lib/auth/password";
 import {
   PrismaClient,
   UserRole,
@@ -8,6 +9,7 @@ import {
   PaymentMethod,
   AttachmentType,
 } from "@prisma/client";
+import argon2 from "argon2";
 
 const prisma = new PrismaClient();
 
@@ -59,11 +61,12 @@ async function main() {
   // ADMIN USERS
   // NOTE: passwordHash is intentionally a placeholder.
   // Replace with your real bcrypt hash if login testing is required.
-  // ------------------------------------------------------------
+  // 
+
   await prisma.adminUser.create({
     data: {
-      email: "admin@jaswithdentalcare.com",
-      passwordHash: "REPLACE_WITH_BCRYPT_HASH",
+      email: "admin@gmail.com",
+      passwordHash: await signPassword("admin123"),
       name: "Jaswith Admin",
       role: UserRole.ADMIN,
       active: true,

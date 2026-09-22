@@ -225,7 +225,7 @@
 //                       </form>
 //                     </td>
 //                     <td className="p-2">
-//                       <form action={deleteAppointment}>
+//                       <form action={deleteAppoinclstment}>
 //                         <input type="hidden" name="id" value={a.id} />
 //                         <button className="text-red-600 text-xs">Delete</button>
 //                       </form>

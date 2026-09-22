@@ -3,28 +3,17 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
-  addDoctor,
   addPayment,
-  addTestimonial,
-  addTreatment,
   deleteAppointment,
   deleteAttachment,
-  deleteDoctor,
   deletePatient,
-  deletePrescription,
-  deleteTestimonial,
-  deleteTreatment,
   logout,
   saveAppointment,
   saveBill,
   saveClinical,
   savePatient,
   savePrescription,
-  saveSettings,
   updateClinic,
-  updateDoctor,
-  updateTestimonial,
-  updateTreatment,
 } from "./actions";
 
 /* ============================================================
