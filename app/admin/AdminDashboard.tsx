@@ -15,6 +15,7 @@ import {
   savePrescription,
   updateClinic,
 } from "./actions";
+import Setting from "./Setting";
 
 /* ============================================================
    TYPES
@@ -1868,6 +1869,7 @@ Paracetamol 500mg — SOS`}
           "files",
           "reports",
           "backup",
+          "settings"
         ].map((item) => (
           <button
             key={item}
@@ -3355,83 +3357,7 @@ Paracetamol 500mg — SOS`}
               </button>
             </div>
 
-            <div className="card">
-              <h3>
-                Clinic setup
-              </h3>
-
-              <form
-                action={async (
-                  formData
-                ) => {
-                  await updateClinic(
-                    formData
-                  );
-
-                  setSettings(
-                    (current) => ({
-                      ...current,
-                      clinicName:
-                        String(
-                          formData.get(
-                            "name"
-                          ) || ""
-                        ),
-                    })
-                  );
-
-                  alert(
-                    "Settings saved."
-                  );
-                }}
-              >
-                <div className="grid">
-                  <div>
-                    <label>
-                      Clinic name
-                    </label>
-
-                    <input
-                      name="name"
-                      defaultValue={
-                        clinic.name
-                      }
-                    />
-                  </div>
-
-                  <div>
-                    <label>
-                      Doctor
-                    </label>
-
-                    <input
-                      value={
-                        settings.doctor
-                      }
-                      readOnly
-                    />
-                  </div>
-
-                  <div>
-                    <label>
-                      Default
-                      currency
-                    </label>
-
-                    <input
-                      value={
-                        settings.currency
-                      }
-                      readOnly
-                    />
-                  </div>
-                </div>
-
-                <button type="submit">
-                  Save settings
-                </button>
-              </form>
-            </div>
+        
 
             <div className="card">
               <h3>
@@ -3452,6 +3378,12 @@ Paracetamol 500mg — SOS`}
             </div>
           </>
         )}
+
+        {
+          page === "settings" && (
+            <Setting  clinic={clinic} doctors={doctors} testimonials={testimonials} treatments={treatments} />
+          )
+        }
       </main>
 
       {/* ======================================================
