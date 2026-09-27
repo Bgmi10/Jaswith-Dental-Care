@@ -39,11 +39,14 @@ export async function getAdminData() {
     doctors,
     treatments,
     testimonials,
-    clinical,
     invoices,
     prescriptions,
     attachments,
   ] = await Promise.all([
+    // ==========================================================
+    // PATIENTS
+    // Clinical information is now stored directly on Patient.
+    // ==========================================================
     prisma.patient.findMany({
       where: {
         clinicId: clinic.id,
@@ -57,6 +60,9 @@ export async function getAdminData() {
       },
     }),
 
+    // ==========================================================
+    // APPOINTMENTS
+    // ==========================================================
     prisma.appointment.findMany({
       where: {
         clinicId: clinic.id,
@@ -66,12 +72,18 @@ export async function getAdminData() {
       },
     }),
 
+    // ==========================================================
+    // DOCTORS
+    // ==========================================================
     prisma.doctor.findMany({
       where: {
         clinicId: clinic.id,
       },
     }),
 
+    // ==========================================================
+    // TREATMENTS
+    // ==========================================================
     prisma.treatment.findMany({
       where: {
         clinicId: clinic.id,
@@ -81,6 +93,9 @@ export async function getAdminData() {
       },
     }),
 
+    // ==========================================================
+    // TESTIMONIALS
+    // ==========================================================
     prisma.testimonial.findMany({
       where: {
         clinicId: clinic.id,
@@ -90,20 +105,9 @@ export async function getAdminData() {
       },
     }),
 
-    prisma.clinicalRecord.findMany({
-      where: {
-        patient: {
-          clinicId: clinic.id,
-        },
-      },
-      include: {
-        treatmentRecords: true,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-    }),
-
+    // ==========================================================
+    // INVOICES
+    // ==========================================================
     prisma.invoice.findMany({
       where: {
         clinicId: clinic.id,
@@ -117,6 +121,9 @@ export async function getAdminData() {
       },
     }),
 
+    // ==========================================================
+    // PRESCRIPTIONS
+    // ==========================================================
     prisma.prescription.findMany({
       where: {
         patient: {
@@ -131,6 +138,9 @@ export async function getAdminData() {
       },
     }),
 
+    // ==========================================================
+    // ATTACHMENTS
+    // ==========================================================
     prisma.attachment.findMany({
       where: {
         patient: {
@@ -150,7 +160,6 @@ export async function getAdminData() {
     doctors,
     treatments,
     testimonials,
-    clinical,
     invoices,
     prescriptions,
     attachments,

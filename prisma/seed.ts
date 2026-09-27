@@ -58,8 +58,8 @@ async function main() {
     console.log("Deleting ToothRecord...");
     await tx.toothRecord.deleteMany();
 
-    console.log("Deleting ClinicalRecord...");
-    await tx.clinicalRecord.deleteMany();
+    // ClinicalRecord has been removed from the new schema.
+    // Patient now contains the clinical-entry fields directly.
 
     console.log("Deleting Appointment...");
     await tx.appointment.deleteMany();
@@ -90,9 +90,11 @@ async function main() {
   });
 
   console.log("");
+
   console.log("==========================================");
   console.log("DATABASE FLUSH COMPLETED");
   console.log("==========================================");
+
   console.log("");
 
   // ============================================================
@@ -144,9 +146,13 @@ async function main() {
       openingHours:
         "Mon–Sat: 10:00 AM–1:00 PM & 4:30 PM–8:30 PM · Sundays by appointment",
 
+      logo: null,
+
       invoicePrefix: "INV",
 
       patientPrefix: "JDC",
+
+      patientSequence: 0,
     },
   });
 
@@ -170,6 +176,8 @@ async function main() {
       bio:
         "Specialises in advanced dental implants, full mouth rehabilitation, and smile design.",
 
+      image: null,
+
       active: true,
     },
   });
@@ -183,23 +191,46 @@ async function main() {
   const treatments = [
     {
       name: "Dental Implants",
+
       description:
         "Advanced, long-lasting replacement for missing teeth.",
+
+      image: null,
+
+      price: null,
     },
+
     {
       name: "Complete & Partial Dentures",
+
       description:
         "Custom-fitted dentures restoring function and appearance.",
+
+      image: null,
+
+      price: null,
     },
+
     {
       name: "Smile Designing & Cosmetics",
+
       description:
         "Cosmetic treatments tailored to enhance your smile.",
+
+      image: null,
+
+      price: null,
     },
+
     {
       name: "Root Canal & Full Mouth Rehab",
+
       description:
         "Comprehensive root canal therapy and full mouth restoration.",
+
+      image: null,
+
+      price: null,
     },
   ];
 
@@ -207,8 +238,15 @@ async function main() {
     const createdTreatment = await prisma.treatment.create({
       data: {
         clinicId: clinic.id,
+
         name: treatment.name,
+
         description: treatment.description,
+
+        image: treatment.image,
+
+        price: treatment.price,
+
         active: true,
       },
     });
@@ -217,10 +255,11 @@ async function main() {
   }
 
   // ============================================================
-  // VERIFY DATABASE IS CLEAN
+  // VERIFY DATABASE
   // ============================================================
 
   console.log("");
+
   console.log("==========================================");
   console.log("VERIFYING DATABASE");
   console.log("==========================================");
@@ -233,7 +272,6 @@ async function main() {
     prisma.testimonial.count(),
     prisma.patient.count(),
     prisma.appointment.count(),
-    prisma.clinicalRecord.count(),
     prisma.toothRecord.count(),
     prisma.treatmentRecord.count(),
     prisma.prescription.count(),
@@ -248,6 +286,7 @@ async function main() {
   ]);
 
   console.log("");
+
   console.log(`AdminUser:          ${counts[0]}`);
   console.log(`Clinic:             ${counts[1]}`);
   console.log(`Doctor:             ${counts[2]}`);
@@ -255,51 +294,65 @@ async function main() {
   console.log(`Testimonial:        ${counts[4]}`);
   console.log(`Patient:            ${counts[5]}`);
   console.log(`Appointment:        ${counts[6]}`);
-  console.log(`ClinicalRecord:     ${counts[7]}`);
-  console.log(`ToothRecord:        ${counts[8]}`);
-  console.log(`TreatmentRecord:    ${counts[9]}`);
-  console.log(`Prescription:       ${counts[10]}`);
-  console.log(`Attachment:         ${counts[11]}`);
-  console.log(`Invoice:            ${counts[12]}`);
-  console.log(`InvoiceItem:        ${counts[13]}`);
-  console.log(`Payment:            ${counts[14]}`);
-  console.log(`AuditLog:           ${counts[15]}`);
-  console.log(`MedicalHistory:     ${counts[16]}`);
-  console.log(`DentalHistory:      ${counts[17]}`);
-  console.log(`PrescriptionItem:   ${counts[18]}`);
+  console.log(`ToothRecord:        ${counts[7]}`);
+  console.log(`TreatmentRecord:    ${counts[8]}`);
+  console.log(`Prescription:       ${counts[9]}`);
+  console.log(`Attachment:         ${counts[10]}`);
+  console.log(`Invoice:            ${counts[11]}`);
+  console.log(`InvoiceItem:        ${counts[12]}`);
+  console.log(`Payment:            ${counts[13]}`);
+  console.log(`AuditLog:           ${counts[14]}`);
+  console.log(`MedicalHistory:     ${counts[15]}`);
+  console.log(`DentalHistory:      ${counts[16]}`);
+  console.log(`PrescriptionItem:   ${counts[17]}`);
 
   console.log("");
+
   console.log("==========================================");
   console.log("SEED COMPLETED");
   console.log("==========================================");
+
   console.log("");
 
-  console.log(`Admin:      ${admin.email}`);
-  console.log(`Clinic:     ${clinic.name}`);
-  console.log(`Doctor:     ${doctor.name}`);
-  console.log(`Treatments: ${treatments.length}`);
+  console.log(`Admin:       ${admin.email}`);
+  console.log(`Clinic:      ${clinic.name}`);
+  console.log(`Doctor:      ${doctor.name}`);
+  console.log(`Treatments:  ${treatments.length}`);
+
   console.log("");
 
   console.log("Expected database state:");
+
   console.log("- 1 AdminUser");
   console.log("- 1 Clinic");
   console.log("- 1 Doctor");
   console.log("- 4 Treatments");
+  console.log("- 0 Testimonials");
   console.log("- 0 Patients");
   console.log("- 0 Appointments");
+  console.log("- 0 ToothRecords");
+  console.log("- 0 TreatmentRecords");
+  console.log("- 0 Prescriptions");
+  console.log("- 0 Attachments");
   console.log("- 0 Invoices");
+  console.log("- 0 InvoiceItems");
   console.log("- 0 Payments");
-  console.log("- 0 Clinical Records");
-  console.log("- 0 Testimonials");
+  console.log("- 0 AuditLogs");
+  console.log("- 0 MedicalHistories");
+  console.log("- 0 DentalHistories");
+  console.log("- 0 PrescriptionItems");
 }
 
 main()
   .catch((error) => {
     console.error("");
+
     console.error("==========================================");
     console.error("SEED FAILED");
     console.error("==========================================");
+
     console.error("");
+
     console.error(error);
 
     process.exit(1);

@@ -8,7 +8,7 @@ import {
   addTreatment,
   deleteDoctor,
   deleteTestimonial,
-  deleteTreatment,
+  deleteTreatmentCatalog,
   updateClinic,
   updateDoctor,
   updateTestimonial,
@@ -29,6 +29,7 @@ type Clinic = {
   address: string | null;
   mapsUrl: string | null;
   openingHours: string | null;
+  patientPrefix: string;
 };
 
 type Doctor = {
@@ -128,6 +129,18 @@ const uploadImage = async (
   return data.url;
 };
 
+const formDataToObject = (
+  formData: FormData
+): Record<string, unknown> => {
+  const data: Record<string, unknown> = {};
+
+  formData.forEach((value, key) => {
+    data[key] = value;
+  });
+
+  return data;
+};
+
 const reloadAdmin = () => {
   window.location.reload();
 };
@@ -167,10 +180,17 @@ export default function Setting({
     try {
       setSaving(true);
 
-      await updateClinic(formData);
+      const result = await updateClinic(
+        formDataToObject(formData)
+      );
+
+      if (!result.success) {
+        throw new Error(
+          result.error || "Unable to update clinic."
+        );
+      }
 
       alert("Clinic details updated successfully.");
-
       reloadAdmin();
     } catch (error) {
       alert(
@@ -229,10 +249,19 @@ export default function Setting({
 
       const id = formData.get("id");
 
-      if (typeof id === "string" && id) {
-        await updateDoctor(formData);
-      } else {
-        await addDoctor(formData);
+      const result =
+        typeof id === "string" && id
+          ? await updateDoctor(
+              formDataToObject(formData)
+            )
+          : await addDoctor(
+              formDataToObject(formData)
+            );
+
+      if (!result.success) {
+        throw new Error(
+          result.error || "Unable to save doctor."
+        );
       }
 
       setDoctorModal(null);
@@ -261,11 +290,13 @@ export default function Setting({
     }
 
     try {
-      const formData = new FormData();
+      const result = await deleteDoctor(doctor.id);
 
-      formData.set("id", doctor.id);
-
-      await deleteDoctor(formData);
+      if (!result.success) {
+        throw new Error(
+          result.error || "Unable to delete doctor."
+        );
+      }
 
       reloadAdmin();
     } catch (error) {
@@ -319,10 +350,19 @@ export default function Setting({
 
       const id = formData.get("id");
 
-      if (typeof id === "string" && id) {
-        await updateTreatment(formData);
-      } else {
-        await addTreatment(formData);
+      const result =
+        typeof id === "string" && id
+          ? await updateTreatment(
+              formDataToObject(formData)
+            )
+          : await addTreatment(
+              formDataToObject(formData)
+            );
+
+      if (!result.success) {
+        throw new Error(
+          result.error || "Unable to save treatment."
+        );
       }
 
       setTreatmentModal(null);
@@ -351,14 +391,15 @@ export default function Setting({
     }
 
     try {
-      const formData = new FormData();
-
-      formData.set(
-        "id",
+      const result = await deleteTreatmentCatalog(
         treatment.id
       );
 
-      await deleteTreatment(formData);
+      if (!result.success) {
+        throw new Error(
+          result.error || "Unable to delete treatment."
+        );
+      }
 
       reloadAdmin();
     } catch (error) {
@@ -382,10 +423,19 @@ export default function Setting({
 
       const id = formData.get("id");
 
-      if (typeof id === "string" && id) {
-        await updateTestimonial(formData);
-      } else {
-        await addTestimonial(formData);
+      const result =
+        typeof id === "string" && id
+          ? await updateTestimonial(
+              formDataToObject(formData)
+            )
+          : await addTestimonial(
+              formDataToObject(formData)
+            );
+
+      if (!result.success) {
+        throw new Error(
+          result.error || "Unable to save testimonial."
+        );
       }
 
       setTestimonialModal(null);
@@ -414,14 +464,15 @@ export default function Setting({
     }
 
     try {
-      const formData = new FormData();
-
-      formData.set(
-        "id",
+      const result = await deleteTestimonial(
         testimonial.id
       );
 
-      await deleteTestimonial(formData);
+      if (!result.success) {
+        throw new Error(
+          result.error || "Unable to delete testimonial."
+        );
+      }
 
       reloadAdmin();
     } catch (error) {
@@ -794,20 +845,47 @@ export default function Setting({
           <form
             action={handleClinicSubmit}
           >
+          <input
+    type="hidden"
+    name="id"
+    value={clinic.id}
+  />
             <div className="form-grid">
-              <div className="field">
-                <label>
-                  Clinic name
-                </label>
+            <div className="field">
+  <label>
+    Clinic name
+  </label>
 
-                <input
-                  name="name"
-                  defaultValue={
-                    clinic.name
-                  }
-                  required
-                />
-              </div>
+  <input
+    name="name"
+    defaultValue={clinic.name}
+    required
+  />
+</div>
+
+<div className="field">
+  <label>
+    Patient ID prefix
+  </label>
+
+  <input
+    name="patientPrefix"
+    defaultValue={clinic.patientPrefix || "JASWITH"}
+    placeholder="JDC"
+    maxLength={20}
+    required
+  />
+
+  <p
+    style={{
+      color: "#687780",
+      fontSize: 12,
+      margin: "6px 0 0",
+    }}
+  >
+    New patient IDs will use this prefix, for example JDC-00001.
+  </p>
+</div>
 
               <div className="field">
                 <label>
@@ -1331,6 +1409,11 @@ Sunday: Closed`}
                 handleDoctorSubmit
               }
             >
+              <input
+    type="hidden"
+    name="clinicId"
+    value={clinic.id}
+  />
               {doctorModal !==
                 "new" && (
                 <input
@@ -1537,6 +1620,11 @@ Sunday: Closed`}
                 handleTreatmentSubmit
               }
             >
+               <input
+    type="hidden"
+    name="clinicId"
+    value={clinic.id}
+  />
               {treatmentModal !==
                 "new" && (
                 <input
@@ -1729,6 +1817,12 @@ Sunday: Closed`}
                 handleTestimonialSubmit
               }
             >
+
+<input
+    type="hidden"
+    name="clinicId"
+    value={clinic.id}
+  />
               {testimonialModal !==
                 "new" && (
                 <input

@@ -1,938 +1,3968 @@
 "use server";
 
-import prisma from "@/prisma";
-import { getClinic } from "@/src/lib/clinic";
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
-import { cookies } from "next/headers";
+import { Prisma, PrismaClient } from "@prisma/client";
+
+/* ============================================================
+   PRISMA
+============================================================ */
+
+const globalForPrisma = globalThis as unknown as {
+  prisma?: PrismaClient;
+};
+
+const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient();
+
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prisma;
+}
+
+/* ============================================================
+   TYPES
+============================================================ */
+
+type ActionResult<T = unknown> =
+  | {
+      success: true;
+      [key: string]: any;
+    }
+  | {
+      success: false;
+      error: string;
+    };
 
 /* ============================================================
    HELPERS
 ============================================================ */
 
-function text(formData: FormData, key: string) {
-  const value = formData.get(key);
-  return typeof value === "string" ? value.trim() : "";
+function str(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const result = String(value).trim();
+
+  return result === "" ? null : result;
 }
 
-function optionalText(formData: FormData, key: string) {
-  const value = text(formData, key);
-  return value || null;
+function requiredStr(
+  value: unknown,
+  field: string
+): string {
+  const result = str(value);
+
+  if (!result) {
+    throw new Error(`${field} is required`);
+  }
+
+  return result;
 }
 
-function numberValue(formData: FormData, key: string) {
-  const value = Number(formData.get(key));
-  return Number.isFinite(value) ? value : 0;
+function int(value: unknown): number | null {
+  if (
+    value === undefined ||
+    value === null ||
+    value === ""
+  ) {
+    return null;
+  }
+
+  const result = Number(value);
+
+  if (!Number.isFinite(result)) {
+    return null;
+  }
+
+  return Math.trunc(result);
 }
 
-function dateValue(value: string) {
-  if (!value) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+function bool(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (
+    value === "true" ||
+    value === "1" ||
+    value === 1 ||
+    value === "on"
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
-function revalidateAdmin() {
-  revalidatePath("/admin");
+function date(value: unknown): Date | null {
+  if (
+    value === undefined ||
+    value === null ||
+    value === ""
+  ) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return value;
+  }
+
+  const result = new Date(String(value));
+
+  if (Number.isNaN(result.getTime())) {
+    return null;
+  }
+
+  return result;
 }
 
+function decimal(
+  value: unknown
+): Prisma.Decimal | null {
+  if (
+    value === undefined ||
+    value === null ||
+    value === ""
+  ) {
+    return null;
+  }
+
+  try {
+    return new Prisma.Decimal(String(value));
+  } catch {
+    return null;
+  }
+}
+
+function decimalZero(value: unknown) {
+  return (
+    decimal(value) ??
+    new Prisma.Decimal(0)
+  );
+}
+
+/* ============================================================
+   REVALIDATION
+============================================================ */
+
+function revalidatePatient(
+  patientId?: string | null
+) {
+  revalidatePath("/patients");
+
+  if (patientId) {
+    revalidatePath(`/patients/${patientId}`);
+  }
+
+  revalidatePath("/dashboard");
+}
+
+function revalidateAppointments() {
+  revalidatePath("/appointments");
+  revalidatePath("/dashboard");
+}
+
+function revalidateBilling() {
+  revalidatePath("/billing");
+  revalidatePath("/invoices");
+  revalidatePath("/dashboard");
+}
+
+/* ============================================================
+   DASHBOARD
+============================================================ */
+
+/**
+ * Main dashboard data.
+ *
+ * This is intended to be called directly by the dashboard
+ * server component.
+ */
+export async function getDashboardData(
+  clinicId: string
+) {
+  try {
+    if (!clinicId) {
+      throw new Error("Clinic ID is required");
+    }
+
+    const now = new Date();
+
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const endOfToday = new Date(now);
+    endOfToday.setHours(23, 59, 59, 999);
+
+    const startOfMonth = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      1
+    );
+
+    const endOfMonth = new Date(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      0,
+      23,
+      59,
+      59,
+      999
+    );
+
+    const [
+      patientCount,
+      todayAppointments,
+      pendingAppointments,
+      completedTreatments,
+      unpaidInvoices,
+      todayPayments,
+      monthPayments,
+      recentPatients,
+      upcomingAppointments,
+      recentPayments,
+    ] = await Promise.all([
+      prisma.patient.count({
+        where: {
+          clinicId,
+        },
+      }),
+
+      prisma.appointment.count({
+        where: {
+          clinicId,
+          date: {
+            gte: startOfToday,
+            lte: endOfToday,
+          },
+        },
+      }),
+
+      prisma.appointment.count({
+        where: {
+          clinicId,
+          status: "PENDING",
+        },
+      }),
+
+      prisma.treatmentRecord.count({
+        where: {
+          patient: {
+            clinicId,
+          },
+          status: "COMPLETED",
+        },
+      }),
+
+      prisma.invoice.aggregate({
+        where: {
+          clinicId,
+          status: {
+            in: ["UNPAID", "PARTIAL"],
+          },
+        },
+        _sum: {
+          total: true,
+        },
+        _count: {
+          id: true,
+        },
+      }),
+
+      prisma.payment.aggregate({
+        where: {
+          invoice: {
+            clinicId,
+          },
+          paymentDate: {
+            gte: startOfToday,
+            lte: endOfToday,
+          },
+        },
+        _sum: {
+          amount: true,
+        },
+      }),
+
+      prisma.payment.aggregate({
+        where: {
+          invoice: {
+            clinicId,
+          },
+          paymentDate: {
+            gte: startOfMonth,
+            lte: endOfMonth,
+          },
+        },
+        _sum: {
+          amount: true,
+        },
+      }),
+
+      prisma.patient.findMany({
+        where: {
+          clinicId,
+        },
+        orderBy: {
+          registeredAt: "desc",
+        },
+        take: 10,
+        select: {
+          id: true,
+          patientNumber: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          registeredAt: true,
+        },
+      }),
+
+      prisma.appointment.findMany({
+        where: {
+          clinicId,
+          date: {
+            gte: startOfToday,
+          },
+          status: {
+            notIn: ["CANCELLED", "COMPLETED"],
+          },
+        },
+        orderBy: [
+          {
+            date: "asc",
+          },
+          {
+            time: "asc",
+          },
+        ],
+        take: 10,
+        include: {
+          patient: {
+            select: {
+              id: true,
+              patientNumber: true,
+              firstName: true,
+              lastName: true,
+              phone: true,
+            },
+          },
+          doctor: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+      }),
+
+      prisma.payment.findMany({
+        where: {
+          invoice: {
+            clinicId,
+          },
+        },
+        orderBy: {
+          paymentDate: "desc",
+        },
+        take: 10,
+        include: {
+          invoice: {
+            select: {
+              id: true,
+              invoiceNumber: true,
+              patient: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  patientNumber: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    return {
+      success: true,
+
+      stats: {
+        patients: patientCount,
+        todayAppointments,
+        pendingAppointments,
+        completedTreatments,
+        unpaidInvoices:
+          unpaidInvoices._count.id,
+        outstandingAmount:
+          unpaidInvoices._sum.total ??
+          new Prisma.Decimal(0),
+        todayRevenue:
+          todayPayments._sum.amount ??
+          new Prisma.Decimal(0),
+        monthRevenue:
+          monthPayments._sum.amount ??
+          new Prisma.Decimal(0),
+      },
+
+      recentPatients,
+      upcomingAppointments,
+      recentPayments,
+    };
+  } catch (error) {
+    console.error(
+      "getDashboardData error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load dashboard",
+    };
+  }
+}
+
+/* ============================================================
+   DASHBOARD APPOINTMENTS
+============================================================ */
+
+export async function getDashboardAppointments(
+  clinicId: string
+) {
+  try {
+    const appointments =
+      await prisma.appointment.findMany({
+        where: {
+          clinicId,
+        },
+        orderBy: [
+          {
+            date: "asc",
+          },
+          {
+            time: "asc",
+          },
+        ],
+        take: 50,
+        include: {
+          patient: true,
+          doctor: true,
+        },
+      });
+
+    return {
+      success: true,
+      appointments,
+    };
+  } catch (error) {
+    console.error(
+      "getDashboardAppointments error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load appointments",
+    };
+  }
+}
+
+/* ============================================================
+   PATIENT
+============================================================ */
+/* ============================================================
+   PATIENT + CLINICAL ENTRY
+============================================================ */
+/**
+ * Get all patients for a clinic.
+ */
+export async function getPatients(clinicId: string) {
+  try {
+    if (!clinicId) {
+      throw new Error("Clinic ID is required");
+    }
+
+    const patients = await prisma.patient.findMany({
+      where: {
+        clinicId,
+      },
+      orderBy: {
+        registeredAt: "desc",
+      },
+      include: {
+        medicalHistory: true,
+        dentalHistory: true,
+        appointments: {
+          orderBy: {
+            date: "desc",
+          },
+          take: 5,
+        },
+        treatmentRecords: {
+          orderBy: {
+            createdAt: "desc",
+          },
+          take: 5,
+        },
+        invoices: {
+          orderBy: {
+            invoiceDate: "desc",
+          },
+          take: 5,
+        },
+      },
+    });
+
+    return {
+      success: true,
+      patients,
+    };
+  } catch (error) {
+    console.error("getPatients error:", error);
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load patients",
+    };
+  }
+}
+
+/**
+ * Get a single patient.
+ */
+export async function getPatient(patientId: string) {
+  try {
+    if (!patientId) {
+      throw new Error("Patient ID is required");
+    }
+
+    const patient = await prisma.patient.findUnique({
+      where: {
+        id: patientId,
+      },
+      include: {
+        medicalHistory: true,
+        dentalHistory: true,
+        appointments: {
+          orderBy: {
+            date: "desc",
+          },
+          include: {
+            doctor: true,
+          },
+        },
+        treatmentRecords: {
+          orderBy: {
+            createdAt: "desc",
+          },
+          include: {
+            doctor: true,
+            treatment: true,
+            toothRecord: true,
+          },
+        },
+        toothRecords: {
+          orderBy: {
+            toothNumber: "asc",
+          },
+        },
+        prescriptions: {
+          orderBy: {
+            prescriptionDate: "desc",
+          },
+          include: {
+            doctor: true,
+            items: true,
+          },
+        },
+        attachments: {
+          orderBy: {
+            createdAt: "desc",
+          },
+        },
+        invoices: {
+          orderBy: {
+            invoiceDate: "desc",
+          },
+          include: {
+            items: true,
+            payments: true,
+          },
+        },
+      },
+    });
+
+    if (!patient) {
+      throw new Error("Patient not found");
+    }
+
+    return {
+      success: true,
+      patient,
+    };
+  } catch (error) {
+    console.error("getPatient error:", error);
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load patient",
+    };
+  }
+}
+
+/**
+ * Search patients.
+ */
+export async function searchPatients(
+  clinicId: string,
+  search: string
+) {
+  try {
+    if (!clinicId) {
+      throw new Error("Clinic ID is required");
+    }
+
+    const value = search.trim();
+
+    if (!value) {
+      return {
+        success: true,
+        patients: [],
+      };
+    }
+
+    const patients = await prisma.patient.findMany({
+      where: {
+        clinicId,
+        OR: [
+          {
+            firstName: {
+              contains: value,
+              mode: "insensitive",
+            },
+          },
+          {
+            lastName: {
+              contains: value,
+              mode: "insensitive",
+            },
+          },
+          {
+            patientNumber: {
+              contains: value,
+              mode: "insensitive",
+            },
+          },
+          {
+            phone: {
+              contains: value,
+            },
+          },
+        ],
+      },
+      orderBy: {
+        firstName: "asc",
+      },
+      take: 25,
+    });
+
+    return {
+      success: true,
+      patients,
+    };
+  } catch (error) {
+    console.error("searchPatients error:", error);
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to search patients",
+    };
+  }
+}
+
+/**
+ * Create or update a patient.
+ *
+ * patientNumber is generated automatically when creating.
+ */
+export async function savePatient(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = str(data.id);
+
+    const clinicId = requiredStr(
+      data.clinicId,
+      "Clinic"
+    );
+
+    const firstName = requiredStr(
+      data.firstName,
+      "First name"
+    );
+
+    const phone = requiredStr(
+      data.phone,
+      "Phone"
+    );
+
+    const patientData = {
+      clinicId,
+
+      // BASIC PATIENT INFORMATION
+
+      firstName,
+
+      lastName: str(data.lastName),
+
+      dateOfBirth: date(
+        data.dateOfBirth
+      ),
+
+      age: int(
+        data.age
+      ),
+
+      gender: str(
+        data.gender
+      ),
+
+      phone,
+
+      alternatePhone: str(
+        data.alternatePhone
+      ),
+
+      email: str(
+        data.email
+      ),
+
+      address: str(
+        data.address
+      ),
+
+      occupation: str(
+        data.occupation
+      ),
+
+      bloodGroup: str(
+        data.bloodGroup
+      ),
+
+      // EMERGENCY CONTACT
+
+      emergencyName: str(
+        data.emergencyName
+      ),
+
+      emergencyPhone: str(
+        data.emergencyPhone
+      ),
+
+      emergencyRelation: str(
+        data.emergencyRelation
+      ),
+
+      // MEDICAL / ALERT INFORMATION
+
+      allergies: str(
+        data.allergies
+      ),
+
+      medicalAlerts: str(
+        data.medicalAlerts
+      ),
+
+      currentMedications: str(
+        data.currentMedications
+      ),
+
+      previousSurgeries: str(
+        data.previousSurgeries
+      ),
+
+      // DENTAL BACKGROUND
+
+      dentalHistoryNotes: str(
+        data.dentalHistoryNotes
+      ),
+
+      // CLINICAL ENTRY
+
+      visitDate: date(
+        data.visitDate
+      ),
+
+      chiefComplaint: str(
+        data.chiefComplaint
+      ),
+
+      examination: str(
+        data.examination
+      ),
+
+      diagnosis: str(
+        data.diagnosis
+      ),
+
+      clinicalNotes: str(
+        data.clinicalNotes
+      ),
+
+      treatmentPlan: str(
+        data.treatmentPlan
+      ),
+
+      followUpDate: date(
+        data.followUpDate
+      ),
+    };
+
+    // UPDATE EXISTING PATIENT
+
+    if (id) {
+      const patient = await prisma.patient.update({
+        where: {
+          id,
+        },
+        data: patientData,
+      });
+
+      revalidatePatient(patient.id);
+
+      return {
+        success: true,
+        patient,
+      };
+    }
+
+    // CREATE NEW PATIENT
+
+    const patient = await prisma.$transaction(
+      async (tx) => {
+        const clinic = await tx.clinic.update({
+          where: {
+            id: clinicId,
+          },
+          data: {
+            patientSequence: {
+              increment: 1,
+            },
+          },
+          select: {
+            patientPrefix: true,
+            patientSequence: true,
+          },
+        });
+
+        const patientNumber =
+          `${clinic.patientPrefix}-${String(
+            clinic.patientSequence
+          ).padStart(5, "0")}`;
+
+        return tx.patient.create({
+          data: {
+            ...patientData,
+            patientNumber,
+          },
+        });
+      }
+    );
+
+    revalidatePatient(patient.id);
+
+    return {
+      success: true,
+      patient,
+    };
+  } catch (error) {
+    console.error("savePatient error:", error);
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save patient",
+    };
+  }
+}
 /* ============================================================
    CLINIC
 ============================================================ */
 
-export async function updateClinic(formData: FormData) {
-  const clinic = await getClinic();
+/**
+ * Update an existing clinic.
+ */
+export async function updateClinic(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = requiredStr(data.id, "Clinic ID");
 
-  await prisma.clinic.update({
-    where: {
-      id: clinic.id,
-    },
-    data: {
-      name: text(formData, "name"),
-      tagline: optionalText(formData, "tagline"),
-      phone: optionalText(formData, "phone"),
-      whatsapp: optionalText(formData, "whatsapp"),
-      email: optionalText(formData, "email"),
-      address: optionalText(formData, "address"),
-      mapsUrl: optionalText(formData, "mapsUrl"),
-      openingHours: optionalText(formData, "openingHours"),
-    },
-  });
+    const clinicData = {
+      name: requiredStr(data.name, "Clinic name"),
 
-  revalidateAdmin();
-}
+      tagline: str(data.tagline),
+      phone: str(data.phone),
+      whatsapp: str(data.whatsapp),
+      email: str(data.email),
+      address: str(data.address),
+      mapsUrl: str(data.mapsUrl),
+      openingHours: str(data.openingHours),
+      logo: str(data.logo),
 
-/* ============================================================
-   DOCTORS
-============================================================ */
+      invoicePrefix:
+        str(data.invoicePrefix) ?? "INV",
 
-export async function addDoctor(formData: FormData) {
-  const clinic = await getClinic();
+      patientPrefix:
+        str(data.patientPrefix) ?? "JASWITH",
+    };
 
-  await prisma.doctor.create({
-    data: {
-      clinicId: clinic.id,
-      name: text(formData, "name"),
-      qualification: optionalText(formData, "qualification"),
-      specialization: optionalText(formData, "specialization"),
-      bio: optionalText(formData, "bio"),
-      image: optionalText(formData, "image"),
-    },
-  });
-
-  revalidateAdmin();
-}
-
-export async function updateDoctor(formData: FormData) {
-  const id = text(formData, "id");
-
-  if (!id) throw new Error("Doctor ID is required");
-
-  await prisma.doctor.update({
-    where: { id },
-    data: {
-      name: text(formData, "name"),
-      qualification: optionalText(formData, "qualification"),
-      specialization: optionalText(formData, "specialization"),
-      bio: optionalText(formData, "bio"),
-      image: optionalText(formData, "image"),
-    },
-  });
-
-  revalidateAdmin();
-}
-
-export async function deleteDoctor(formData: FormData) {
-  const id = text(formData, "id");
-
-  if (!id) throw new Error("Doctor ID is required");
-
-  await prisma.doctor.delete({
-    where: { id },
-  });
-
-  revalidateAdmin();
-}
-
-/* ============================================================
-   TREATMENTS
-============================================================ */
-
-export async function addTreatment(formData: FormData) {
-  const clinic = await getClinic();
-
-  const priceValue = formData.get("price");
-
-  await prisma.treatment.create({
-    data: {
-      clinicId: clinic.id,
-      name: text(formData, "name"),
-      description: optionalText(formData, "description"),
-      image: optionalText(formData, "image"),
-      price:
-        priceValue !== null && String(priceValue).trim() !== ""
-          ? numberValue(formData, "price")
-          : null,
-    },
-  });
-
-  revalidateAdmin();
-}
-
-export async function updateTreatment(formData: FormData) {
-  const id = text(formData, "id");
-
-  if (!id) throw new Error("Treatment ID is required");
-
-  const priceValue = formData.get("price");
-
-  await prisma.treatment.update({
-    where: { id },
-    data: {
-      name: text(formData, "name"),
-      description: optionalText(formData, "description"),
-      image: optionalText(formData, "image"),
-      price:
-        priceValue !== null && String(priceValue).trim() !== ""
-          ? numberValue(formData, "price")
-          : null,
-    },
-  });
-
-  revalidateAdmin();
-}
-
-export async function deleteTreatment(formData: FormData) {
-  const id = text(formData, "id");
-
-  if (!id) throw new Error("Treatment ID is required");
-
-  await prisma.treatment.delete({
-    where: { id },
-  });
-
-  revalidateAdmin();
-}
-
-/* ============================================================
-   TESTIMONIALS
-============================================================ */
-
-export async function addTestimonial(formData: FormData) {
-  const clinic = await getClinic();
-
-  const rating = Number(formData.get("rating"));
-
-  await prisma.testimonial.create({
-    data: {
-      clinicId: clinic.id,
-      name: text(formData, "name"),
-      review: text(formData, "review"),
-      rating:
-        Number.isFinite(rating) && rating > 0
-          ? Math.min(5, Math.max(1, rating))
-          : null,
-    },
-  });
-
-  revalidateAdmin();
-}
-
-export async function updateTestimonial(formData: FormData) {
-  const id = text(formData, "id");
-
-  if (!id) throw new Error("Testimonial ID is required");
-
-  const rating = Number(formData.get("rating"));
-
-  await prisma.testimonial.update({
-    where: { id },
-    data: {
-      name: text(formData, "name"),
-      review: text(formData, "review"),
-      rating:
-        Number.isFinite(rating) && rating > 0
-          ? Math.min(5, Math.max(1, rating))
-          : null,
-    },
-  });
-
-  revalidateAdmin();
-}
-
-export async function deleteTestimonial(formData: FormData) {
-  const id = text(formData, "id");
-
-  if (!id) throw new Error("Testimonial ID is required");
-
-  await prisma.testimonial.delete({
-    where: { id },
-  });
-
-  revalidateAdmin();
-}
-
-/* ============================================================
-   PATIENTS
-============================================================ */
-
-export async function savePatient(formData: FormData) {
-  const clinic = await getClinic();
-
-  const id = optionalText(formData, "id");
-
-  const patientNumber = text(formData, "patientNumber");
-  const firstName = text(formData, "firstName");
-
-  if (!firstName) {
-    throw new Error("Patient first name is required");
-  }
-
-  if (!patientNumber) {
-    throw new Error("Patient number is required");
-  }
-  const ageValue = Number(formData.get("age"));
-
-  const patientData = {
-    patientNumber,
-    firstName,
-    lastName: optionalText(formData, "lastName"),
-  
-    age:
-      Number.isInteger(ageValue) &&
-      ageValue >= 0 &&
-      ageValue <= 150
-        ? ageValue
-        : null,
-  
-    gender: optionalText(formData, "gender"),
-    phone: text(formData, "phone"),
-    alternatePhone: optionalText(formData, "alternatePhone"),
-    email: optionalText(formData, "email"),
-    address: optionalText(formData, "address"),
-    occupation: optionalText(formData, "occupation"),
-    bloodGroup: optionalText(formData, "bloodGroup"),
-    emergencyName: optionalText(formData, "emergencyName"),
-    emergencyPhone: optionalText(formData, "emergencyPhone"),
-    emergencyRelation: optionalText(formData, "emergencyRelation"),
-    allergies: optionalText(formData, "allergies"),
-    medicalAlerts: optionalText(formData, "medicalAlerts"),
-    notes: optionalText(formData, "notes"),
-  };
-  
-  let patient;
-
-  if (id) {
-    patient = await prisma.patient.update({
+    const clinic = await prisma.clinic.update({
       where: {
         id,
       },
-      data: patientData,
+      data: clinicData,
     });
-  } else {
-    patient = await prisma.patient.create({
-      data: {
-        clinicId: clinic.id,
-        ...patientData,
-      },
-    });
+
+    revalidatePath("/");
+    revalidatePath("/settings");
+    revalidatePath("/dashboard");
+
+    return {
+      success: true,
+      clinic,
+    };
+  } catch (error) {
+    console.error("updateClinic error:", error);
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to update clinic",
+    };
   }
-
-  /* Medical history */
-
-  const medicalData = {
-    diabetes: formData.get("diabetes") === "true",
-    hypertension: formData.get("hypertension") === "true",
-    heartDisease: formData.get("heartDisease") === "true",
-    asthma: formData.get("asthma") === "true",
-    bleedingDisorder: formData.get("bleedingDisorder") === "true",
-    kidneyDisease: formData.get("kidneyDisease") === "true",
-    liverDisease: formData.get("liverDisease") === "true",
-    thyroidDisease: formData.get("thyroidDisease") === "true",
-    epilepsy: formData.get("epilepsy") === "true",
-    pregnancy: formData.get("pregnancy") === "true",
-    smoker: formData.get("smoker") === "true",
-    tobaccoUse: formData.get("tobaccoUse") === "true",
-    alcoholUse: formData.get("alcoholUse") === "true",
-    currentMedications: optionalText(formData, "currentMedications"),
-    previousSurgeries: optionalText(formData, "previousSurgeries"),
-    otherConditions: optionalText(formData, "otherConditions"),
-    familyHistory: optionalText(formData, "familyHistory"),
-  };
-
-  await prisma.medicalHistory.upsert({
-    where: {
-      patientId: patient.id,
-    },
-    create: {
-      patientId: patient.id,
-      ...medicalData,
-    },
-    update: medicalData,
-  });
-
-  /* Dental history */
-
-  const dentalData = {
-    previousDentist: optionalText(formData, "previousDentist"),
-    lastDentalVisit: dateValue(text(formData, "lastDentalVisit") || ""),
-    brushingFrequency: optionalText(formData, "brushingFrequency"),
-    flossingFrequency: optionalText(formData, "flossingFrequency"),
-    sensitivity: formData.get("sensitivity") === "true",
-    gumBleeding: formData.get("gumBleeding") === "true",
-    toothPain: formData.get("toothPain") === "true",
-    previousRootCanal: formData.get("previousRootCanal") === "true",
-    previousExtraction: formData.get("previousExtraction") === "true",
-    dentures: formData.get("dentures") === "true",
-    implants: formData.get("implants") === "true",
-    braces: formData.get("braces") === "true",
-    previousTreatments: optionalText(formData, "previousTreatments"),
-    dentalNotes: optionalText(formData, "dentalNotes"),
-  };
-
-  await prisma.dentalHistory.upsert({
-    where: {
-      patientId: patient.id,
-    },
-    create: {
-      patientId: patient.id,
-      ...dentalData,
-    },
-    update: dentalData,
-  });
-
-  revalidateAdmin();
-
-  return patient.id;
 }
 
-export async function deletePatient(formData: FormData) {
-  const id = text(formData, "id");
+/* ============================================================
+   DOCTOR
+============================================================ */
 
-  if (!id) throw new Error("Patient ID is required");
+/**
+ * Add a new doctor.
+ */
+export async function addDoctor(
+  data: Record<string, unknown>
+) {
+  try {
+    const clinicId = requiredStr(
+      data.clinicId,
+      "Clinic"
+    );
 
-  await prisma.patient.delete({
-    where: {
-      id,
-    },
-  });
+    const name = requiredStr(
+      data.name,
+      "Doctor name"
+    );
 
-  revalidateAdmin();
+    const doctor = await prisma.doctor.create({
+      data: {
+        clinicId,
+
+        name,
+
+        qualification: str(data.qualification),
+        specialization: str(data.specialization),
+        bio: str(data.bio),
+        image: str(data.image),
+
+        active:
+          data.active === undefined
+            ? true
+            : bool(data.active),
+      },
+    });
+
+    revalidatePath("/");
+    revalidatePath("/dashboard");
+    revalidatePath("/doctors");
+    revalidatePath("/settings");
+
+    return {
+      success: true,
+      doctor,
+    };
+  } catch (error) {
+    console.error("addDoctor error:", error);
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to add doctor",
+    };
+  }
+}
+
+/**
+ * Update an existing doctor.
+ */
+export async function updateDoctor(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = requiredStr(
+      data.id,
+      "Doctor ID"
+    );
+
+    const name = requiredStr(
+      data.name,
+      "Doctor name"
+    );
+
+    const doctor = await prisma.doctor.update({
+      where: {
+        id,
+      },
+
+      data: {
+        name,
+
+        qualification: str(data.qualification),
+        specialization: str(data.specialization),
+        bio: str(data.bio),
+        image: str(data.image),
+
+        active:
+          data.active === undefined
+            ? true
+            : bool(data.active),
+      },
+    });
+
+    revalidatePath("/");
+    revalidatePath("/dashboard");
+    revalidatePath("/doctors");
+    revalidatePath("/settings");
+
+    return {
+      success: true,
+      doctor,
+    };
+  } catch (error) {
+    console.error("updateDoctor error:", error);
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to update doctor",
+    };
+  }
+}
+
+/* ============================================================
+   TESTIMONIAL
+============================================================ */
+
+/**
+ * Add a new testimonial.
+ */
+export async function addTestimonial(
+  data: Record<string, unknown>
+) {
+  try {
+    const clinicId = requiredStr(
+      data.clinicId,
+      "Clinic"
+    );
+
+    const name = requiredStr(
+      data.name,
+      "Patient name"
+    );
+
+    const review = requiredStr(
+      data.review,
+      "Review"
+    );
+
+    const ratingValue = int(data.rating);
+
+    let rating: number | null = null;
+
+    if (ratingValue !== null) {
+      if (ratingValue < 1 || ratingValue > 5) {
+        throw new Error(
+          "Rating must be between 1 and 5"
+        );
+      }
+
+      rating = ratingValue;
+    }
+
+    const testimonial =
+      await prisma.testimonial.create({
+        data: {
+          clinicId,
+
+          name,
+          review,
+          rating,
+        },
+      });
+
+    revalidatePath("/");
+    revalidatePath("/dashboard");
+    revalidatePath("/testimonials");
+    revalidatePath("/settings");
+
+    return {
+      success: true,
+      testimonial,
+    };
+  } catch (error) {
+    console.error(
+      "addTestimonial error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to add testimonial",
+    };
+  }
+}
+
+/**
+ * Update an existing testimonial.
+ */
+export async function updateTestimonial(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = requiredStr(
+      data.id,
+      "Testimonial ID"
+    );
+
+    const name = requiredStr(
+      data.name,
+      "Patient name"
+    );
+
+    const review = requiredStr(
+      data.review,
+      "Review"
+    );
+
+    const ratingValue = int(data.rating);
+
+    let rating: number | null = null;
+
+    if (ratingValue !== null) {
+      if (ratingValue < 1 || ratingValue > 5) {
+        throw new Error(
+          "Rating must be between 1 and 5"
+        );
+      }
+
+      rating = ratingValue;
+    }
+
+    const testimonial =
+      await prisma.testimonial.update({
+        where: {
+          id,
+        },
+
+        data: {
+          name,
+          review,
+          rating,
+        },
+      });
+
+    revalidatePath("/");
+    revalidatePath("/dashboard");
+    revalidatePath("/testimonials");
+    revalidatePath("/settings");
+
+    return {
+      success: true,
+      testimonial,
+    };
+  } catch (error) {
+    console.error(
+      "updateTestimonial error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to update testimonial",
+    };
+  }
+}
+
+/* ============================================================
+   TREATMENT
+============================================================ */
+
+/**
+ * Add a new treatment to the public treatment catalog.
+ */
+export async function addTreatment(
+  data: Record<string, unknown>
+) {
+  try {
+    const clinicId = requiredStr(
+      data.clinicId,
+      "Clinic"
+    );
+
+    const name = requiredStr(
+      data.name,
+      "Treatment name"
+    );
+
+    const price = decimal(data.price);
+
+    const treatment =
+      await prisma.treatment.create({
+        data: {
+          clinicId,
+
+          name,
+          description: str(data.description),
+          image: str(data.image),
+
+          price,
+
+          active:
+            data.active === undefined
+              ? true
+              : bool(data.active),
+        },
+      });
+
+    revalidatePath("/");
+    revalidatePath("/dashboard");
+    revalidatePath("/treatments");
+    revalidatePath("/settings");
+
+    return {
+      success: true,
+      treatment,
+    };
+  } catch (error) {
+    console.error(
+      "addTreatment error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to add treatment",
+    };
+  }
+}
+
+/**
+ * Update an existing treatment.
+ */
+export async function updateTreatment(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = requiredStr(
+      data.id,
+      "Treatment ID"
+    );
+
+    const name = requiredStr(
+      data.name,
+      "Treatment name"
+    );
+
+    const price = decimal(data.price);
+
+    const treatment =
+      await prisma.treatment.update({
+        where: {
+          id,
+        },
+
+        data: {
+          name,
+
+          description: str(data.description),
+          image: str(data.image),
+
+          price,
+
+          active:
+            data.active === undefined
+              ? true
+              : bool(data.active),
+        },
+      });
+
+    revalidatePath("/");
+    revalidatePath("/dashboard");
+    revalidatePath("/treatments");
+    revalidatePath("/settings");
+
+    return {
+      success: true,
+      treatment,
+    };
+  } catch (error) {
+    console.error(
+      "updateTreatment error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to update treatment",
+    };
+  }
+}
+
+
+export async function deletePatient(
+  id: string
+) {
+  try {
+    if (!id) {
+      throw new Error(
+        "Patient ID is required"
+      );
+    }
+
+    await prisma.patient.delete({
+      where: {
+        id,
+      },
+    });
+
+    revalidatePatient();
+
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "deletePatient error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to delete patient",
+    };
+  }
 }
 
 /* ============================================================
    APPOINTMENTS
 ============================================================ */
 
-const appointmentStatusMap = {
-  PENDING: "PENDING",
-  CONFIRMED: "CONFIRMED",
-  CHECKED_IN: "CHECKED_IN",
-  IN_PROGRESS: "IN_PROGRESS",
-  COMPLETED: "COMPLETED",
-  CANCELLED: "CANCELLED",
-  NO_SHOW: "NO_SHOW",
-} as const;
-
-export async function saveAppointment(formData: FormData) {
-  const clinic = await getClinic();
-
-  const id = optionalText(formData, "id");
-  const patientId = optionalText(formData, "patientId");
-  const doctorId = optionalText(formData, "doctorId");
-
-  const date = dateValue(text(formData, "date"));
-
-  if (!date) {
-    throw new Error("Appointment date is required");
-  }
-
-  const statusInput = text(formData, "status") || "PENDING";
-
-  const status =
-    appointmentStatusMap[
-      statusInput as keyof typeof appointmentStatusMap
-    ] || "PENDING";
-
-  const data = {
-    patientId,
-    doctorId,
-    patientName: text(formData, "patientName"),
-    phone: text(formData, "phone"),
-    date,
-    time: optionalText(formData, "time"),
-    duration: Number(formData.get("duration")) || null,
-    treatment: optionalText(formData, "treatment"),
-    reason: optionalText(formData, "reason"),
-    message: optionalText(formData, "message"),
-    status,
-    notes: optionalText(formData, "notes"),
-  };
-
-  if (id) {
-    await prisma.appointment.update({
-      where: { id },
-      data,
-    });
-  } else {
-    await prisma.appointment.create({
-      data: {
-        clinicId: clinic.id,
-        ...data,
-      },
-    });
-  }
-
-  revalidateAdmin();
-}
-
-export async function updateAppointmentStatus(formData: FormData) {
-  const id = text(formData, "id");
-
-  if (!id) throw new Error("Appointment ID is required");
-
-  const statusInput = text(formData, "status");
-
-  if (!(statusInput in appointmentStatusMap)) {
-    throw new Error("Invalid appointment status");
-  }
-
-  await prisma.appointment.update({
-    where: {
-      id,
-    },
-    data: {
-      status:
-        appointmentStatusMap[
-          statusInput as keyof typeof appointmentStatusMap
+export async function getAppointments(
+  clinicId: string
+) {
+  try {
+    const appointments =
+      await prisma.appointment.findMany({
+        where: {
+          clinicId,
+        },
+        orderBy: [
+          {
+            date: "desc",
+          },
+          {
+            time: "desc",
+          },
         ],
-    },
-  });
+        include: {
+          patient: true,
+          doctor: true,
+          createdBy: true,
+        },
+      });
 
-  revalidateAdmin();
-}
+    return {
+      success: true,
+      appointments,
+    };
+  } catch (error) {
+    console.error(
+      "getAppointments error:",
+      error
+    );
 
-export async function deleteAppointment(formData: FormData) {
-  const id = text(formData, "id");
-
-  if (!id) throw new Error("Appointment ID is required");
-
-  await prisma.appointment.delete({
-    where: {
-      id,
-    },
-  });
-
-  revalidateAdmin();
-}
-
-/* ============================================================
-   CLINICAL RECORDS
-============================================================ */
-
-export async function saveClinical(formData: FormData) {
-  const clinic = await getClinic();
-
-  const id = optionalText(formData, "id");
-  const patientId = text(formData, "patientId");
-  const doctorId = optionalText(formData, "doctorId");
-
-  if (!patientId) {
-    throw new Error("Patient is required");
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load appointments",
+    };
   }
+}
 
-  const date = dateValue(text(formData, "date")) || new Date();
+export async function saveAppointment(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = str(data.id);
 
-  const clinicalData = {
-    patientId,
-    doctorId,
-    type: "TREATMENT" as const,
-    chiefComplaint: optionalText(formData, "chiefComplaint"),
-    examination: optionalText(formData, "examination"),
-    diagnosis: optionalText(formData, "diagnosis"),
-    clinicalNotes: optionalText(formData, "notes"),
-    followUpDate: dateValue(text(formData, "nextVisit") || ""),
-  };
+    const clinicId =
+      requiredStr(data.clinicId, "Clinic");
 
-  if (id) {
-    await prisma.clinicalRecord.update({
+    const patientName =
+      requiredStr(
+        data.patientName,
+        "Patient name"
+      );
+
+    const phone =
+      requiredStr(data.phone, "Phone");
+
+    const appointmentDate =
+      date(data.date);
+
+    if (!appointmentDate) {
+      throw new Error(
+        "Appointment date is required"
+      );
+    }
+
+    const appointmentData = {
+      clinicId,
+
+      patientId:
+        str(data.patientId),
+
+      doctorId:
+        str(data.doctorId),
+
+      createdById:
+        str(data.createdById),
+
+      patientName,
+      phone,
+
+      date: appointmentDate,
+
+      time:
+        str(data.time),
+
+      duration:
+        int(data.duration),
+
+      treatment:
+        str(data.treatment),
+
+      reason:
+        str(data.reason),
+
+      message:
+        str(data.message),
+
+      status:
+        (str(data.status) as any) ??
+        "PENDING",
+
+      notes:
+        str(data.notes),
+    };
+
+    let appointment;
+
+    if (id) {
+      appointment =
+        await prisma.appointment.update({
+          where: {
+            id,
+          },
+          data: appointmentData,
+        });
+    } else {
+      appointment =
+        await prisma.appointment.create({
+          data: appointmentData,
+        });
+    }
+
+    revalidateAppointments();
+
+    return {
+      success: true,
+      appointment,
+    };
+  } catch (error) {
+    console.error(
+      "saveAppointment error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save appointment",
+    };
+  }
+}
+
+export async function deleteAppointment(
+  id: string
+) {
+  try {
+    if (!id) {
+      throw new Error(
+        "Appointment ID is required"
+      );
+    }
+
+    await prisma.appointment.delete({
       where: {
         id,
       },
-      data: clinicalData,
-    });
-  } else {
-    const record = await prisma.clinicalRecord.create({
-      data: {
-        ...clinicalData,
-        createdAt: date,
-      },
     });
 
-    const procedure = optionalText(formData, "procedure");
+    revalidateAppointments();
 
-    if (procedure) {
-      await prisma.treatmentRecord.create({
-        data: {
-          patientId,
-          doctorId,
-          clinicalRecordId: record.id,
-          treatmentName: procedure,
-          diagnosis: optionalText(formData, "diagnosis"),
-          notes: optionalText(formData, "notes"),
-          status: "COMPLETED",
-          completedDate: date,
-          cost: formData.get("cost")
-            ? numberValue(formData, "cost")
-            : null,
-        },
-      });
-    }
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "deleteAppointment error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to delete appointment",
+    };
   }
-
-  revalidateAdmin();
-}
-
-export async function deleteClinical(formData: FormData) {
-  const id = text(formData, "id");
-
-  if (!id) throw new Error("Clinical record ID is required");
-
-  await prisma.clinicalRecord.delete({
-    where: {
-      id,
-    },
-  });
-
-  revalidateAdmin();
 }
 
 /* ============================================================
-   TREATMENT RECORDS
+   DOCTORS
 ============================================================ */
 
-export async function saveTreatmentRecord(formData: FormData) {
-  const patientId = text(formData, "patientId");
+export async function getDoctors(
+  clinicId: string
+) {
+  try {
+    const doctors =
+      await prisma.doctor.findMany({
+        where: {
+          clinicId,
+        },
+        orderBy: {
+          name: "asc",
+        },
+        include: {
+          _count: {
+            select: {
+              appointments: true,
+              treatments: true,
+              prescriptions: true,
+            },
+          },
+        },
+      });
 
-  if (!patientId) {
-    throw new Error("Patient is required");
+    return {
+      success: true,
+      doctors,
+    };
+  } catch (error) {
+    console.error(
+      "getDoctors error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load doctors",
+    };
   }
+}
 
-  const id = optionalText(formData, "id");
+export async function saveDoctor(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = str(data.id);
 
-  const data = {
-    patientId,
-    doctorId: optionalText(formData, "doctorId"),
-    treatmentId: optionalText(formData, "treatmentId"),
-    toothRecordId: optionalText(formData, "toothRecordId"),
-    treatmentName: text(formData, "treatmentName"),
-    diagnosis: optionalText(formData, "diagnosis"),
-    notes: optionalText(formData, "notes"),
-    status: (text(formData, "status") || "PLANNED") as
-      | "PLANNED"
-      | "IN_PROGRESS"
-      | "COMPLETED"
-      | "CANCELLED",
-    scheduledDate: dateValue(text(formData, "scheduledDate") || ""),
-    completedDate: dateValue(text(formData, "completedDate") || ""),
-    cost: formData.get("cost")
-      ? numberValue(formData, "cost")
-      : null,
-  };
+    const clinicId =
+      requiredStr(data.clinicId, "Clinic");
 
-  if (id) {
-    await prisma.treatmentRecord.update({
-      where: { id },
-      data,
-    });
-  } else {
-    await prisma.treatmentRecord.create({
-      data,
-    });
+    const name =
+      requiredStr(data.name, "Doctor name");
+
+    const doctorData = {
+      clinicId,
+      name,
+      qualification:
+        str(data.qualification),
+      specialization:
+        str(data.specialization),
+      bio:
+        str(data.bio),
+      image:
+        str(data.image),
+      active:
+        data.active === undefined
+          ? true
+          : bool(data.active),
+    };
+
+    let doctor;
+
+    if (id) {
+      doctor =
+        await prisma.doctor.update({
+          where: {
+            id,
+          },
+          data: doctorData,
+        });
+    } else {
+      doctor =
+        await prisma.doctor.create({
+          data: doctorData,
+        });
+    }
+
+    revalidatePath("/doctors");
+    revalidatePath("/settings");
+    revalidatePath("/dashboard");
+
+    return {
+      success: true,
+      doctor,
+    };
+  } catch (error) {
+    console.error(
+      "saveDoctor error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save doctor",
+    };
   }
+}
 
-  revalidateAdmin();
+export async function deleteDoctor(
+  id: string
+) {
+  try {
+    await prisma.doctor.delete({
+      where: {
+        id,
+      },
+    });
+
+    revalidatePath("/doctors");
+    revalidatePath("/dashboard");
+
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "deleteDoctor error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to delete doctor",
+    };
+  }
+}
+
+/* ============================================================
+   TREATMENT CATALOG
+============================================================ */
+
+export async function getTreatments(
+  clinicId: string
+) {
+  try {
+    const treatments =
+      await prisma.treatment.findMany({
+        where: {
+          clinicId,
+        },
+        orderBy: {
+          name: "asc",
+        },
+        include: {
+          _count: {
+            select: {
+              treatmentRecords: true,
+              invoiceItems: true,
+            },
+          },
+        },
+      });
+
+    return {
+      success: true,
+      treatments,
+    };
+  } catch (error) {
+    console.error(
+      "getTreatments error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load treatments",
+    };
+  }
+}
+
+export async function saveTreatmentCatalog(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = str(data.id);
+
+    const clinicId =
+      requiredStr(data.clinicId, "Clinic");
+
+    const name =
+      requiredStr(
+        data.name,
+        "Treatment name"
+      );
+
+    const treatmentData = {
+      clinicId,
+      name,
+      description:
+        str(data.description),
+      image:
+        str(data.image),
+      price:
+        decimal(data.price),
+      active:
+        data.active === undefined
+          ? true
+          : bool(data.active),
+    };
+
+    let treatment;
+
+    if (id) {
+      treatment =
+        await prisma.treatment.update({
+          where: {
+            id,
+          },
+          data: treatmentData,
+        });
+    } else {
+      treatment =
+        await prisma.treatment.create({
+          data: treatmentData,
+        });
+    }
+
+    revalidatePath("/treatments");
+    revalidatePath("/dashboard");
+
+    return {
+      success: true,
+      treatment,
+    };
+  } catch (error) {
+    console.error(
+      "saveTreatmentCatalog error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save treatment",
+    };
+  }
+}
+
+export async function deleteTreatmentCatalog(
+  id: string
+) {
+  try {
+    await prisma.treatment.delete({
+      where: {
+        id,
+      },
+    });
+
+    revalidatePath("/treatments");
+    revalidatePath("/dashboard");
+
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "deleteTreatmentCatalog error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to delete treatment",
+    };
+  }
+}
+
+/* ============================================================
+   TREATMENT RECORD
+============================================================ */
+
+export async function getPatientTreatments(
+  patientId: string
+) {
+  try {
+    const treatments =
+      await prisma.treatmentRecord.findMany({
+        where: {
+          patientId,
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+        include: {
+          doctor: true,
+          treatment: true,
+          toothRecord: true,
+          invoiceItems: true,
+        },
+      });
+
+    return {
+      success: true,
+      treatments,
+    };
+  } catch (error) {
+    console.error(
+      "getPatientTreatments error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load treatments",
+    };
+  }
+}
+
+export async function saveTreatment(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = str(data.id);
+
+    const patientId =
+      requiredStr(
+        data.patientId,
+        "Patient"
+      );
+
+    const treatmentName =
+      requiredStr(
+        data.treatmentName,
+        "Treatment name"
+      );
+
+    const treatmentData = {
+      patientId,
+
+      doctorId:
+        str(data.doctorId),
+
+      treatmentId:
+        str(data.treatmentId),
+
+      toothRecordId:
+        str(data.toothRecordId),
+
+      treatmentName,
+
+      diagnosis:
+        str(data.diagnosis),
+
+      notes:
+        str(data.notes),
+
+      status:
+        (str(data.status) as any) ??
+        "PLANNED",
+
+      scheduledDate:
+        date(data.scheduledDate),
+
+      completedDate:
+        date(data.completedDate),
+
+      cost:
+        decimal(data.cost),
+    };
+
+    let treatment;
+
+    if (id) {
+      treatment =
+        await prisma.treatmentRecord.update({
+          where: {
+            id,
+          },
+          data: treatmentData,
+        });
+    } else {
+      treatment =
+        await prisma.treatmentRecord.create({
+          data: treatmentData,
+        });
+    }
+
+    revalidatePatient(patientId);
+
+    return {
+      success: true,
+      treatment,
+    };
+  } catch (error) {
+    console.error(
+      "saveTreatment error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save treatment",
+    };
+  }
+}
+
+export async function deleteTreatment(
+  id: string
+) {
+  try {
+    const record =
+      await prisma.treatmentRecord.findUnique({
+        where: {
+          id,
+        },
+        select: {
+          patientId: true,
+        },
+      });
+
+    if (!record) {
+      throw new Error(
+        "Treatment record not found"
+      );
+    }
+
+    await prisma.treatmentRecord.delete({
+      where: {
+        id,
+      },
+    });
+
+    revalidatePatient(record.patientId);
+
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "deleteTreatment error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to delete treatment",
+    };
+  }
+}
+
+/* ============================================================
+   TOOTH RECORD
+============================================================ */
+
+export async function saveToothRecord(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = str(data.id);
+
+    const patientId =
+      requiredStr(
+        data.patientId,
+        "Patient"
+      );
+
+    const toothNumber =
+      requiredStr(
+        data.toothNumber,
+        "Tooth number"
+      );
+
+    const toothData = {
+      patientId,
+      toothNumber,
+
+      condition:
+        str(data.condition),
+
+      diagnosis:
+        str(data.diagnosis),
+
+      notes:
+        str(data.notes),
+
+      surfaceMesial:
+        bool(data.surfaceMesial),
+
+      surfaceDistal:
+        bool(data.surfaceDistal),
+
+      surfaceOcclusal:
+        bool(data.surfaceOcclusal),
+
+      surfaceBuccal:
+        bool(data.surfaceBuccal),
+
+      surfaceLingual:
+        bool(data.surfaceLingual),
+    };
+
+    let tooth;
+
+    if (id) {
+      tooth =
+        await prisma.toothRecord.update({
+          where: {
+            id,
+          },
+          data: toothData,
+        });
+    } else {
+      tooth =
+        await prisma.toothRecord.create({
+          data: toothData,
+        });
+    }
+
+    revalidatePatient(patientId);
+
+    return {
+      success: true,
+      tooth,
+    };
+  } catch (error) {
+    console.error(
+      "saveToothRecord error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save tooth record",
+    };
+  }
+}
+
+export async function deleteToothRecord(
+  id: string
+) {
+  try {
+    const tooth =
+      await prisma.toothRecord.findUnique({
+        where: {
+          id,
+        },
+        select: {
+          patientId: true,
+        },
+      });
+
+    if (!tooth) {
+      throw new Error(
+        "Tooth record not found"
+      );
+    }
+
+    await prisma.toothRecord.delete({
+      where: {
+        id,
+      },
+    });
+
+    revalidatePatient(tooth.patientId);
+
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "deleteToothRecord error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to delete tooth record",
+    };
+  }
 }
 
 /* ============================================================
    PRESCRIPTIONS
 ============================================================ */
 
-export async function savePrescription(formData: FormData) {
-  const patientId = text(formData, "patientId");
-
-  if (!patientId) {
-    throw new Error("Patient is required");
-  }
-
-  const doctorId = optionalText(formData, "doctorId");
-  const date =
-    dateValue(text(formData, "date") || "") || new Date();
-
-  const prescription = await prisma.prescription.create({
-    data: {
-      patientId,
-      doctorId,
-      prescriptionDate: date,
-      notes: optionalText(formData, "notes"),
-      items: {
-        create: [],
-      },
-    },
-  });
-
-  const medicines = text(formData, "text");
-
-  if (medicines) {
-    const lines = medicines
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    for (const line of lines) {
-      await prisma.prescriptionItem.create({
-        data: {
-          prescriptionId: prescription.id,
-          medicine: line,
-          instructions: optionalText(formData, "instructions"),
+export async function getPatientPrescriptions(
+  patientId: string
+) {
+  try {
+    const prescriptions =
+      await prisma.prescription.findMany({
+        where: {
+          patientId,
+        },
+        orderBy: {
+          prescriptionDate: "desc",
+        },
+        include: {
+          doctor: true,
+          items: true,
         },
       });
-    }
+
+    return {
+      success: true,
+      prescriptions,
+    };
+  } catch (error) {
+    console.error(
+      "getPatientPrescriptions error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load prescriptions",
+    };
   }
-
-  revalidateAdmin();
-
-  return prescription.id;
 }
 
-export async function deletePrescription(formData: FormData) {
-  const id = text(formData, "id");
+export async function savePrescription(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = str(data.id);
 
-  if (!id) throw new Error("Prescription ID is required");
+    const patientId =
+      requiredStr(
+        data.patientId,
+        "Patient"
+      );
 
-  await prisma.prescription.delete({
-    where: {
-      id,
-    },
-  });
+    const prescriptionDate =
+      date(data.prescriptionDate) ??
+      new Date();
 
-  revalidateAdmin();
+    const items =
+      Array.isArray(data.items)
+        ? data.items
+        : [];
+
+    const prescriptionData = {
+      patientId,
+
+      doctorId:
+        str(data.doctorId),
+
+      prescriptionDate,
+
+      notes:
+        str(data.notes),
+    };
+
+    const itemData = items.map(
+      (item: any) => ({
+        medicine:
+          requiredStr(
+            item.medicine,
+            "Medicine"
+          ),
+
+        dosage:
+          str(item.dosage),
+
+        frequency:
+          str(item.frequency),
+
+        duration:
+          str(item.duration),
+
+        instructions:
+          str(item.instructions),
+      })
+    );
+
+    let prescription;
+
+    if (id) {
+      prescription =
+        await prisma.$transaction(
+          async (tx) => {
+            await tx.prescriptionItem.deleteMany(
+              {
+                where: {
+                  prescriptionId: id,
+                },
+              }
+            );
+
+            return tx.prescription.update({
+              where: {
+                id,
+              },
+              data: {
+                ...prescriptionData,
+                items: {
+                  create: itemData,
+                },
+              },
+              include: {
+                items: true,
+                doctor: true,
+              },
+            });
+          }
+        );
+    } else {
+      prescription =
+        await prisma.prescription.create({
+          data: {
+            ...prescriptionData,
+            items: {
+              create: itemData,
+            },
+          },
+          include: {
+            items: true,
+            doctor: true,
+          },
+        });
+    }
+
+    revalidatePatient(patientId);
+
+    return {
+      success: true,
+      prescription,
+    };
+  } catch (error) {
+    console.error(
+      "savePrescription error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save prescription",
+    };
+  }
+}
+
+export async function deletePrescription(
+  id: string
+) {
+  try {
+    const prescription =
+      await prisma.prescription.findUnique({
+        where: {
+          id,
+        },
+        select: {
+          patientId: true,
+        },
+      });
+
+    if (!prescription) {
+      throw new Error(
+        "Prescription not found"
+      );
+    }
+
+    await prisma.prescription.delete({
+      where: {
+        id,
+      },
+    });
+
+    revalidatePatient(
+      prescription.patientId
+    );
+
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "deletePrescription error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to delete prescription",
+    };
+  }
 }
 
 /* ============================================================
-   FILES / ATTACHMENTS
+   ATTACHMENTS
 ============================================================ */
 
-export async function saveAttachment(formData: FormData) {
-  const patientId = text(formData, "patientId");
-  const url = text(formData, "url");
-  const name = text(formData, "name");
-  const mimeType = text(formData, "mimeType");
-  const size = Number(formData.get("size")) || 0;
+export async function saveAttachment(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = str(data.id);
 
-  if (!patientId) {
-    throw new Error("Patient is required");
-  }
+    const patientId =
+      requiredStr(
+        data.patientId,
+        "Patient"
+      );
 
-  if (!url) {
-    throw new Error("Uploaded file URL is required");
-  }
+    const name =
+      requiredStr(
+        data.name,
+        "Attachment name"
+      );
 
-  if (!name) {
-    throw new Error("File name is required");
-  }
+    const mimeType =
+      requiredStr(
+        data.mimeType,
+        "MIME type"
+      );
 
-  if (size > 5 * 1024 * 1024) {
-    throw new Error("File exceeds 5 MB");
-  }
+    const size =
+      int(data.size) ?? 0;
 
-  let type:
-    | "XRAY"
-    | "PHOTO"
-    | "DOCUMENT"
-    | "OTHER" = "OTHER";
-
-  if (mimeType.startsWith("image/")) {
-    type = "PHOTO";
-  } else if (mimeType === "application/pdf") {
-    type = "DOCUMENT";
-  }
-
-  await prisma.attachment.create({
-    data: {
+    const attachmentData = {
       patientId,
-      name,
-      type,
-      mimeType: mimeType || "application/octet-stream",
-      size,
-      url,
-      storageKey: null,
-    },
-  });
 
-  revalidateAdmin();
+      name,
+
+      type:
+        (str(data.type) as any) ??
+        "OTHER",
+
+      mimeType,
+
+      size,
+
+      url:
+        str(data.url),
+
+      storageKey:
+        str(data.storageKey),
+
+      description:
+        str(data.description),
+    };
+
+    let attachment;
+
+    if (id) {
+      attachment =
+        await prisma.attachment.update({
+          where: {
+            id,
+          },
+          data: attachmentData,
+        });
+    } else {
+      attachment =
+        await prisma.attachment.create({
+          data: attachmentData,
+        });
+    }
+
+    revalidatePatient(patientId);
+
+    return {
+      success: true,
+      attachment,
+    };
+  } catch (error) {
+    console.error(
+      "saveAttachment error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save attachment",
+    };
+  }
 }
 
-export async function deleteAttachment(formData: FormData) {
-  const id = text(formData, "id");
+export async function deleteAttachment(
+  id: string
+) {
+  try {
+    if (!id) {
+      throw new Error(
+        "Attachment ID is required"
+      );
+    }
 
-  if (!id) throw new Error("Attachment ID is required");
+    const attachment =
+      await prisma.attachment.findUnique({
+        where: {
+          id,
+        },
+        select: {
+          patientId: true,
+        },
+      });
 
-  await prisma.attachment.delete({
-    where: {
-      id,
-    },
-  });
+    if (!attachment) {
+      throw new Error(
+        "Attachment not found"
+      );
+    }
 
-  revalidateAdmin();
+    await prisma.attachment.delete({
+      where: {
+        id,
+      },
+    });
+
+    revalidatePatient(
+      attachment.patientId
+    );
+
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "deleteAttachment error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to delete attachment",
+    };
+  }
+}
+
+/* ============================================================
+   MEDICAL HISTORY
+============================================================ */
+
+export async function saveMedicalHistory(
+  data: Record<string, unknown>
+) {
+  try {
+    const patientId =
+      requiredStr(
+        data.patientId,
+        "Patient"
+      );
+
+    const historyData = {
+      diabetes:
+        bool(data.diabetes),
+
+      hypertension:
+        bool(data.hypertension),
+
+      heartDisease:
+        bool(data.heartDisease),
+
+      asthma:
+        bool(data.asthma),
+
+      bleedingDisorder:
+        bool(data.bleedingDisorder),
+
+      kidneyDisease:
+        bool(data.kidneyDisease),
+
+      liverDisease:
+        bool(data.liverDisease),
+
+      thyroidDisease:
+        bool(data.thyroidDisease),
+
+      epilepsy:
+        bool(data.epilepsy),
+
+      pregnancy:
+        bool(data.pregnancy),
+
+      smoker:
+        bool(data.smoker),
+
+      tobaccoUse:
+        bool(data.tobaccoUse),
+
+      alcoholUse:
+        bool(data.alcoholUse),
+
+      currentMedications:
+        str(data.currentMedications),
+
+      previousSurgeries:
+        str(data.previousSurgeries),
+
+      otherConditions:
+        str(data.otherConditions),
+
+      familyHistory:
+        str(data.familyHistory),
+    };
+
+    const history =
+      await prisma.medicalHistory.upsert({
+        where: {
+          patientId,
+        },
+
+        create: {
+          patientId,
+          ...historyData,
+        },
+
+        update: historyData,
+      });
+
+    revalidatePatient(patientId);
+
+    return {
+      success: true,
+      history,
+    };
+  } catch (error) {
+    console.error(
+      "saveMedicalHistory error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save medical history",
+    };
+  }
+}
+
+/* ============================================================
+   DENTAL HISTORY
+============================================================ */
+
+export async function saveDentalHistory(
+  data: Record<string, unknown>
+) {
+  try {
+    const patientId =
+      requiredStr(
+        data.patientId,
+        "Patient"
+      );
+
+    const historyData = {
+      previousDentist:
+        str(data.previousDentist),
+
+      lastDentalVisit:
+        date(data.lastDentalVisit),
+
+      brushingFrequency:
+        str(data.brushingFrequency),
+
+      flossingFrequency:
+        str(data.flossingFrequency),
+
+      sensitivity:
+        bool(data.sensitivity),
+
+      gumBleeding:
+        bool(data.gumBleeding),
+
+      toothPain:
+        bool(data.toothPain),
+
+      previousRootCanal:
+        bool(data.previousRootCanal),
+
+      previousExtraction:
+        bool(data.previousExtraction),
+
+      dentures:
+        bool(data.dentures),
+
+      implants:
+        bool(data.implants),
+
+      braces:
+        bool(data.braces),
+
+      previousTreatments:
+        str(data.previousTreatments),
+
+      dentalNotes:
+        str(data.dentalNotes),
+    };
+
+    const history =
+      await prisma.dentalHistory.upsert({
+        where: {
+          patientId,
+        },
+
+        create: {
+          patientId,
+          ...historyData,
+        },
+
+        update: historyData,
+      });
+
+    revalidatePatient(patientId);
+
+    return {
+      success: true,
+      history,
+    };
+  } catch (error) {
+    console.error(
+      "saveDentalHistory error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save dental history",
+    };
+  }
 }
 
 /* ============================================================
    BILLING
 ============================================================ */
 
-function invoiceStatus(total: number, paid: number) {
-  if (paid <= 0) return "UNPAID";
-  if (paid >= total) return "PAID";
-  return "PARTIAL";
-}
-
-export async function saveBill(formData: FormData) {
-  const clinic = await getClinic();
-
-  const patientId = text(formData, "patientId");
-
-  if (!patientId) {
-    throw new Error("Patient is required");
-  }
-
-  const invoiceNumber =
-    text(formData, "invoiceNumber") ||
-    `INV-${Date.now()}`;
-
-  const total = numberValue(formData, "total");
-  const paid = numberValue(formData, "paid");
-  const discount = numberValue(formData, "discount");
-  const tax = numberValue(formData, "tax");
-
-  const subtotal = Math.max(0, total + discount - tax);
-
-  const invoice = await prisma.invoice.create({
-    data: {
-      clinicId: clinic.id,
-      patientId,
-      invoiceNumber,
-      status: invoiceStatus(total, paid),
-      subtotal,
-      discount,
-      tax,
-      total,
-      notes: optionalText(formData, "notes"),
-      invoiceDate:
-        dateValue(text(formData, "date") || "") || new Date(),
-      items: {
-        create: [],
-      },
-    },
-  });
-
-  const itemsText = text(formData, "items");
-
-  if (itemsText) {
-    const lines = itemsText
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    for (const line of lines) {
-      const [description, amountString] = line.split("|");
-
-      const amount = Number(amountString?.trim()) || 0;
-
-      await prisma.invoiceItem.create({
-        data: {
-          invoiceId: invoice.id,
-          description: description?.trim() || line,
-          quantity: 1,
-          unitPrice: amount,
-          amount,
+export async function getInvoices(
+  clinicId: string
+) {
+  try {
+    const invoices =
+      await prisma.invoice.findMany({
+        where: {
+          clinicId,
+        },
+        orderBy: {
+          invoiceDate: "desc",
+        },
+        include: {
+          patient: true,
+          items: true,
+          payments: true,
         },
       });
-    }
-  }
 
-  if (paid > 0) {
-    await prisma.payment.create({
-      data: {
-        invoiceId: invoice.id,
-        amount: paid,
-        method:
-          (text(formData, "method") || "CASH") as
-            | "CASH"
-            | "UPI"
-            | "CARD"
-            | "BANK_TRANSFER"
-            | "OTHER",
-        reference: optionalText(formData, "reference"),
-        notes: optionalText(formData, "paymentNotes"),
-      },
-    });
-  }
-
-  revalidateAdmin();
-
-  return invoice.id;
-}
-
-export async function addPayment(formData: FormData) {
-  const invoiceId = text(formData, "invoiceId");
-  const amount = numberValue(formData, "amount");
-
-  if (!invoiceId) {
-    throw new Error("Invoice is required");
-  }
-
-  if (amount <= 0) {
-    throw new Error("Payment amount must be greater than zero");
-  }
-
-  await prisma.payment.create({
-    data: {
-      invoiceId,
-      amount,
-      method:
-        (text(formData, "method") || "CASH") as
-          | "CASH"
-          | "UPI"
-          | "CARD"
-          | "BANK_TRANSFER"
-          | "OTHER",
-      reference: optionalText(formData, "reference"),
-      notes: optionalText(formData, "notes"),
-    },
-  });
-
-  const invoice = await prisma.invoice.findUnique({
-    where: {
-      id: invoiceId,
-    },
-    include: {
-      payments: true,
-    },
-  });
-
-  if (invoice) {
-    const paid = invoice.payments.reduce(
-      (sum, payment) => sum + Number(payment.amount),
-      0
+    return {
+      success: true,
+      invoices,
+    };
+  } catch (error) {
+    console.error(
+      "getInvoices error:",
+      error
     );
 
-    await prisma.invoice.update({
-      where: {
-        id: invoice.id,
-      },
-      data: {
-        status: invoiceStatus(
-          Number(invoice.total),
-          paid
-        ),
-      },
-    });
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load invoices",
+    };
   }
-
-  revalidateAdmin();
 }
 
-export async function deleteInvoice(formData: FormData) {
-  const id = text(formData, "id");
+export async function getInvoice(
+  id: string
+) {
+  try {
+    const invoice =
+      await prisma.invoice.findUnique({
+        where: {
+          id,
+        },
+        include: {
+          clinic: true,
+          patient: true,
+          items: {
+            include: {
+              treatment: true,
+              treatmentRecord: true,
+            },
+          },
+          payments: {
+            orderBy: {
+              paymentDate: "desc",
+            },
+          },
+        },
+      });
 
-  if (!id) throw new Error("Invoice ID is required");
+    if (!invoice) {
+      throw new Error(
+        "Invoice not found"
+      );
+    }
 
-  await prisma.invoice.delete({
-    where: {
-      id,
-    },
-  });
+    return {
+      success: true,
+      invoice,
+    };
+  } catch (error) {
+    console.error(
+      "getInvoice error:",
+      error
+    );
 
-  revalidateAdmin();
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load invoice",
+    };
+  }
 }
 
 /* ============================================================
-   CLINIC SETTINGS
+   INVOICE NUMBER
 ============================================================ */
 
-export async function saveSettings(formData: FormData) {
-  const clinic = await getClinic();
+async function generateInvoiceNumber(
+  clinicId: string
+): Promise<string> {
+  return prisma.$transaction(
+    async (tx) => {
+      const clinic =
+        await tx.clinic.findUnique({
+          where: {
+            id: clinicId,
+          },
+          select: {
+            invoicePrefix: true,
+          },
+        });
 
-  await prisma.clinic.update({
+      if (!clinic) {
+        throw new Error(
+          "Clinic not found"
+        );
+      }
+
+      const prefix =
+        clinic.invoicePrefix || "INV";
+
+      const latest =
+        await tx.invoice.findFirst({
+          where: {
+            clinicId,
+            invoiceNumber: {
+              startsWith: `${prefix}-`,
+            },
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+          select: {
+            invoiceNumber: true,
+          },
+        });
+
+      let nextNumber = 1;
+
+      if (latest?.invoiceNumber) {
+        const match =
+          latest.invoiceNumber.match(
+            /(\d+)$/
+          );
+
+        if (match) {
+          nextNumber =
+            Number(match[1]) + 1;
+        }
+      }
+
+      return `${prefix}-${String(
+        nextNumber
+      ).padStart(5, "0")}`;
+    }
+  );
+}
+
+/* ============================================================
+   SAVE BILL
+============================================================ */
+
+export async function saveBill(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = str(data.id);
+
+    const clinicId =
+      requiredStr(
+        data.clinicId,
+        "Clinic"
+      );
+
+    const patientId =
+      requiredStr(
+        data.patientId,
+        "Patient"
+      );
+
+    const items =
+      Array.isArray(data.items)
+        ? data.items
+        : [];
+
+    const itemData = items.map(
+      (item: any) => {
+        const quantity =
+          int(item.quantity) ?? 1;
+
+        const unitPrice =
+          decimal(item.unitPrice) ??
+          new Prisma.Decimal(0);
+
+        const amount =
+          decimal(item.amount) ??
+          unitPrice.mul(quantity);
+
+        return {
+          treatmentId:
+            str(item.treatmentId),
+
+          treatmentRecordId:
+            str(
+              item.treatmentRecordId
+            ),
+
+          description:
+            requiredStr(
+              item.description,
+              "Invoice item description"
+            ),
+
+          quantity,
+
+          unitPrice,
+
+          amount,
+        };
+      }
+    );
+
+    const subtotal =
+      decimal(data.subtotal) ??
+      itemData.reduce(
+        (
+          total,
+          item
+        ) =>
+          total.add(item.amount),
+        new Prisma.Decimal(0)
+      );
+
+    const discount =
+      decimalZero(data.discount);
+
+    const tax =
+      decimalZero(data.tax);
+
+    const total =
+      decimal(data.total) ??
+      subtotal
+        .sub(discount)
+        .add(tax);
+
+    const status =
+      (str(data.status) as any) ??
+      "UNPAID";
+
+    let invoice;
+
+    if (id) {
+      invoice =
+        await prisma.$transaction(
+          async (tx) => {
+            await tx.invoiceItem.deleteMany(
+              {
+                where: {
+                  invoiceId: id,
+                },
+              }
+            );
+
+            return tx.invoice.update({
+              where: {
+                id,
+              },
+
+              data: {
+                clinicId,
+                patientId,
+
+                status,
+
+                subtotal,
+                discount,
+                tax,
+                total,
+
+                notes:
+                  str(data.notes),
+
+                invoiceDate:
+                  date(
+                    data.invoiceDate
+                  ) ?? new Date(),
+
+                dueDate:
+                  date(data.dueDate),
+
+                items: {
+                  create: itemData,
+                },
+              },
+
+              include: {
+                items: true,
+                payments: true,
+              },
+            });
+          }
+        );
+    } else {
+      const suppliedNumber =
+        str(data.invoiceNumber);
+
+      const invoiceNumber =
+        suppliedNumber ??
+        await generateInvoiceNumber(
+          clinicId
+        );
+
+      invoice =
+        await prisma.invoice.create({
+          data: {
+            clinicId,
+            patientId,
+
+            invoiceNumber,
+
+            status,
+
+            subtotal,
+            discount,
+            tax,
+            total,
+
+            notes:
+              str(data.notes),
+
+            invoiceDate:
+              date(
+                data.invoiceDate
+              ) ?? new Date(),
+
+            dueDate:
+              date(data.dueDate),
+
+            items: {
+              create: itemData,
+            },
+          },
+
+          include: {
+            items: true,
+            payments: true,
+          },
+        });
+    }
+
+    revalidatePatient(patientId);
+    revalidateBilling();
+
+    return {
+      success: true,
+      invoice,
+    };
+  } catch (error) {
+    console.error(
+      "saveBill error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save bill",
+    };
+  }
+}
+
+/* ============================================================
+   PAYMENT STATUS
+============================================================ */
+
+async function refreshInvoiceStatus(
+  invoiceId: string
+) {
+  const invoice =
+    await prisma.invoice.findUnique({
+      where: {
+        id: invoiceId,
+      },
+      select: {
+        id: true,
+        total: true,
+        patientId: true,
+        status: true,
+      },
+    });
+
+  if (!invoice) {
+    return null;
+  }
+
+  if (invoice.status === "CANCELLED") {
+    return invoice;
+  }
+
+  const aggregate =
+    await prisma.payment.aggregate({
+      where: {
+        invoiceId,
+      },
+      _sum: {
+        amount: true,
+      },
+    });
+
+  const paid =
+    aggregate._sum.amount ??
+    new Prisma.Decimal(0);
+
+  let status:
+    | "UNPAID"
+    | "PARTIAL"
+    | "PAID" =
+    "UNPAID";
+
+  if (
+    paid.greaterThanOrEqualTo(
+      invoice.total
+    )
+  ) {
+    status = "PAID";
+  } else if (
+    paid.greaterThan(0)
+  ) {
+    status = "PARTIAL";
+  }
+
+  return prisma.invoice.update({
     where: {
-      id: clinic.id,
+      id: invoiceId,
     },
     data: {
-      name: text(formData, "clinicName"),
+      status,
     },
   });
+}
 
-  revalidateAdmin();
+/* ============================================================
+   PAYMENT
+============================================================ */
+
+export async function addPayment(
+  data: Record<string, unknown>
+) {
+  try {
+    const invoiceId =
+      requiredStr(
+        data.invoiceId,
+        "Invoice"
+      );
+
+    const amount =
+      decimal(data.amount);
+
+    if (
+      !amount ||
+      amount.lessThanOrEqualTo(0)
+    ) {
+      throw new Error(
+        "Payment amount must be greater than zero"
+      );
+    }
+
+    const invoice =
+      await prisma.invoice.findUnique({
+        where: {
+          id: invoiceId,
+        },
+        select: {
+          id: true,
+          total: true,
+          status: true,
+          patientId: true,
+        },
+      });
+
+    if (!invoice) {
+      throw new Error(
+        "Invoice not found"
+      );
+    }
+
+    if (
+      invoice.status ===
+      "CANCELLED"
+    ) {
+      throw new Error(
+        "Cannot pay a cancelled invoice"
+      );
+    }
+
+    const payment =
+      await prisma.payment.create({
+        data: {
+          invoiceId,
+
+          amount,
+
+          method:
+            (str(data.method) as any) ??
+            "CASH",
+
+          reference:
+            str(data.reference),
+
+          notes:
+            str(data.notes),
+
+          paymentDate:
+            date(
+              data.paymentDate
+            ) ?? new Date(),
+        },
+      });
+
+    await refreshInvoiceStatus(
+      invoiceId
+    );
+
+    revalidatePatient(
+      invoice.patientId
+    );
+
+    revalidateBilling();
+
+    return {
+      success: true,
+      payment,
+    };
+  } catch (error) {
+    console.error(
+      "addPayment error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to add payment",
+    };
+  }
+}
+
+export async function deletePayment(
+  id: string
+) {
+  try {
+    if (!id) {
+      throw new Error(
+        "Payment ID is required"
+      );
+    }
+
+    const payment =
+      await prisma.payment.findUnique({
+        where: {
+          id,
+        },
+        include: {
+          invoice: {
+            select: {
+              patientId: true,
+            },
+          },
+        },
+      });
+
+    if (!payment) {
+      throw new Error(
+        "Payment not found"
+      );
+    }
+
+    await prisma.payment.delete({
+      where: {
+        id,
+      },
+    });
+
+    await refreshInvoiceStatus(
+      payment.invoiceId
+    );
+
+    revalidatePatient(
+      payment.invoice.patientId
+    );
+
+    revalidateBilling();
+
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "deletePayment error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to delete payment",
+    };
+  }
+}
+
+/* ============================================================
+   TESTIMONIALS
+============================================================ */
+
+export async function getTestimonials(
+  clinicId: string
+) {
+  try {
+    const testimonials =
+      await prisma.testimonial.findMany({
+        where: {
+          clinicId,
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+      });
+
+    return {
+      success: true,
+      testimonials,
+    };
+  } catch (error) {
+    console.error(
+      "getTestimonials error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load testimonials",
+    };
+  }
+}
+
+export async function saveTestimonial(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = str(data.id);
+
+    const clinicId =
+      requiredStr(
+        data.clinicId,
+        "Clinic"
+      );
+
+    const name =
+      requiredStr(
+        data.name,
+        "Name"
+      );
+
+    const review =
+      requiredStr(
+        data.review,
+        "Review"
+      );
+
+    const rating =
+      int(data.rating);
+
+    const testimonialData = {
+      clinicId,
+      name,
+      review,
+      rating,
+    };
+
+    let testimonial;
+
+    if (id) {
+      testimonial =
+        await prisma.testimonial.update({
+          where: {
+            id,
+          },
+          data: testimonialData,
+        });
+    } else {
+      testimonial =
+        await prisma.testimonial.create({
+          data: testimonialData,
+        });
+    }
+
+    revalidatePath("/");
+    revalidatePath("/testimonials");
+
+    return {
+      success: true,
+      testimonial,
+    };
+  } catch (error) {
+    console.error(
+      "saveTestimonial error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save testimonial",
+    };
+  }
+}
+
+export async function deleteTestimonial(
+  id: string
+) {
+  try {
+    await prisma.testimonial.delete({
+      where: {
+        id,
+      },
+    });
+
+    revalidatePath("/");
+    revalidatePath("/testimonials");
+
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "deleteTestimonial error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to delete testimonial",
+    };
+  }
+}
+
+/* ============================================================
+   CLINIC
+============================================================ */
+
+export async function getClinic(
+  clinicId: string
+) {
+  try {
+    const clinic =
+      await prisma.clinic.findUnique({
+        where: {
+          id: clinicId,
+        },
+        include: {
+          doctors: {
+            where: {
+              active: true,
+            },
+            orderBy: {
+              name: "asc",
+            },
+          },
+          treatments: {
+            where: {
+              active: true,
+            },
+            orderBy: {
+              name: "asc",
+            },
+          },
+        },
+      });
+
+    if (!clinic) {
+      throw new Error(
+        "Clinic not found"
+      );
+    }
+
+    return {
+      success: true,
+      clinic,
+    };
+  } catch (error) {
+    console.error(
+      "getClinic error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load clinic",
+    };
+  }
+}
+
+export async function saveClinic(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = str(data.id);
+
+    const clinicData = {
+      name:
+        requiredStr(
+          data.name,
+          "Clinic name"
+        ),
+
+      tagline:
+        str(data.tagline),
+
+      phone:
+        str(data.phone),
+
+      whatsapp:
+        str(data.whatsapp),
+
+      email:
+        str(data.email),
+
+      address:
+        str(data.address),
+
+      mapsUrl:
+        str(data.mapsUrl),
+
+      openingHours:
+        str(data.openingHours),
+
+      logo:
+        str(data.logo),
+
+      invoicePrefix:
+        str(data.invoicePrefix) ??
+        "INV",
+
+      patientPrefix:
+        str(data.patientPrefix) ??
+        "JASWITH",
+    };
+
+    let clinic;
+
+    if (id) {
+      clinic =
+        await prisma.clinic.update({
+          where: {
+            id,
+          },
+          data: clinicData,
+        });
+    } else {
+      clinic =
+        await prisma.clinic.create({
+          data: clinicData,
+        });
+    }
+
+    revalidatePath("/");
+    revalidatePath("/settings");
+    revalidatePath("/dashboard");
+
+    return {
+      success: true,
+      clinic,
+    };
+  } catch (error) {
+    console.error(
+      "saveClinic error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save clinic",
+    };
+  }
+}
+
+/* ============================================================
+   ADMIN USERS
+============================================================ */
+
+export async function getAdminUsers() {
+  try {
+    const users =
+      await prisma.adminUser.findMany({
+        orderBy: {
+          createdAt: "desc",
+        },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+          active: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+    return {
+      success: true,
+      users,
+    };
+  } catch (error) {
+    console.error(
+      "getAdminUsers error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load admin users",
+    };
+  }
+}
+
+export async function saveAdminUser(
+  data: Record<string, unknown>
+) {
+  try {
+    const id = str(data.id);
+
+    const email =
+      requiredStr(
+        data.email,
+        "Email"
+      );
+
+    const passwordHash =
+      str(data.passwordHash);
+
+    const userData = {
+      email,
+      name:
+        str(data.name),
+
+      role:
+        (str(data.role) as any) ??
+        "STAFF",
+
+      active:
+        data.active === undefined
+          ? true
+          : bool(data.active),
+    };
+
+    let user;
+
+    if (id) {
+      const updateData: any = {
+        ...userData,
+      };
+
+      if (passwordHash) {
+        updateData.passwordHash =
+          passwordHash;
+      }
+
+      user =
+        await prisma.adminUser.update({
+          where: {
+            id,
+          },
+          data: updateData,
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            role: true,
+            active: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        });
+    } else {
+      if (!passwordHash) {
+        throw new Error(
+          "Password hash is required"
+        );
+      }
+
+      user =
+        await prisma.adminUser.create({
+          data: {
+            ...userData,
+            passwordHash,
+          },
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            role: true,
+            active: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        });
+    }
+
+    revalidatePath("/settings");
+    revalidatePath("/dashboard");
+
+    return {
+      success: true,
+      user,
+    };
+  } catch (error) {
+    console.error(
+      "saveAdminUser error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to save admin user",
+    };
+  }
+}
+
+export async function deleteAdminUser(
+  id: string
+) {
+  try {
+    await prisma.adminUser.delete({
+      where: {
+        id,
+      },
+    });
+
+    revalidatePath("/settings");
+    revalidatePath("/dashboard");
+
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "deleteAdminUser error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to delete admin user",
+    };
+  }
+}
+
+/* ============================================================
+   AUDIT LOG
+============================================================ */
+
+export async function createAuditLog(
+  data: Record<string, unknown>
+) {
+  try {
+    const action =
+      requiredStr(
+        data.action,
+        "Action"
+      );
+
+    const entityType =
+      requiredStr(
+        data.entityType,
+        "Entity type"
+      );
+
+    const log =
+      await prisma.auditLog.create({
+        data: {
+          userId:
+            str(data.userId),
+
+          action,
+
+          entityType,
+
+          entityId:
+            str(data.entityId),
+
+          metadata:
+            data.metadata !== undefined
+              ? (data.metadata as Prisma.InputJsonValue)
+              : undefined,
+
+          ipAddress:
+            str(data.ipAddress),
+        },
+      });
+
+    return {
+      success: true,
+      log,
+    };
+  } catch (error) {
+    console.error(
+      "createAuditLog error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to create audit log",
+    };
+  }
+}
+
+export async function getAuditLogs(
+  limit = 100
+) {
+  try {
+    const logs =
+      await prisma.auditLog.findMany({
+        orderBy: {
+          createdAt: "desc",
+        },
+        take: Math.min(
+          Math.max(limit, 1),
+          500
+        ),
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              role: true,
+            },
+          },
+        },
+      });
+
+    return {
+      success: true,
+      logs,
+    };
+  } catch (error) {
+    console.error(
+      "getAuditLogs error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to load audit logs",
+    };
+  }
 }
 
 /* ============================================================
@@ -940,9 +3970,43 @@ export async function saveSettings(formData: FormData) {
 ============================================================ */
 
 export async function logout() {
-  const cookieStore = await cookies();
+  try {
+    /*
+     * If you use NextAuth/Auth.js, Supabase,
+     * Clerk, or another authentication provider,
+     * replace this with that provider's logout.
+     */
 
-  cookieStore.delete("session");
+    const {
+      cookies,
+    } = await import(
+      "next/headers"
+    );
 
-  redirect("/admin/login");
+    const cookieStore =
+      await cookies();
+
+    cookieStore.delete(
+      "session"
+    );
+
+    revalidatePath("/");
+
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "logout error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to logout",
+    };
+  }
 }

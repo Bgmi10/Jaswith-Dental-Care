@@ -28,14 +28,6 @@ enum AppointmentStatus {
   NO_SHOW
 }
 
-enum ClinicalRecordType {
-  CONSULTATION
-  DIAGNOSIS
-  TREATMENT
-  FOLLOW_UP
-  NOTE
-}
-
 enum TreatmentStatus {
   PLANNED
   IN_PROGRESS
@@ -79,9 +71,8 @@ model AdminUser {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  clinicalRecords ClinicalRecord[]
-  logs            AuditLog[]
-  appointments    Appointment[]
+  logs         AuditLog[]
+  appointments Appointment[]
 }
 
 // ============================================================
@@ -100,7 +91,11 @@ model Clinic {
   openingHours  String?
   logo          String?
   invoicePrefix String   @default("INV")
-  patientPrefix String   @default("JDC")
+
+  // Patient ID configuration
+  patientPrefix   String @default("JASWITH")
+  patientSequence Int    @default(0)
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -111,6 +106,7 @@ model Clinic {
   patients     Patient[]
   invoices     Invoice[]
 }
+
 
 // ============================================================
 // DOCTORS
@@ -126,11 +122,10 @@ model Doctor {
   image          String?
   active         Boolean  @default(true)
 
-  clinic          Clinic           @relation(fields: [clinicId], references: [id], onDelete: Cascade)
-  appointments    Appointment[]
-  clinicalRecords ClinicalRecord[]
-  treatments      TreatmentRecord[]
-  prescriptions   Prescription[]
+  clinic        Clinic            @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  appointments  Appointment[]
+  treatments    TreatmentRecord[]
+  prescriptions Prescription[]
 }
 
 // ============================================================
@@ -146,7 +141,7 @@ model Treatment {
   price       Decimal? @db.Decimal(12, 2)
   active      Boolean  @default(true)
 
-  clinic          Clinic           @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  clinic           Clinic            @relation(fields: [clinicId], references: [id], onDelete: Cascade)
   treatmentRecords TreatmentRecord[]
   invoiceItems     InvoiceItem[]
 }
@@ -171,70 +166,126 @@ model Testimonial {
 // ============================================================
 
 model Patient {
-  id                String   @id @default(cuid())
-  clinicId          String
-  patientNumber     String
-  firstName         String
-  lastName          String?
-  dateOfBirth       DateTime?
-  age               Int?
-  gender            String?
-  phone             String
-  alternatePhone    String?
-  email             String?
-  address           String?
-  occupation        String?
-  bloodGroup        String?
+  id            String   @id @default(cuid())
+  clinicId      String
+  patientNumber String
+
+  // ----------------------------------------------------------
+  // BASIC PATIENT INFORMATION
+  // ----------------------------------------------------------
+
+  firstName      String
+  lastName       String?
+  dateOfBirth    DateTime?
+  age            Int?
+  gender         String?
+  phone          String
+  alternatePhone String?
+  email          String?
+  address        String?
+  occupation     String?
+  bloodGroup     String?
+
+  // ----------------------------------------------------------
+  // EMERGENCY CONTACT
+  // ----------------------------------------------------------
+
   emergencyName     String?
   emergencyPhone    String?
   emergencyRelation String?
-  allergies         String?
-  medicalAlerts     String?
-  notes             String?
-  registeredAt      DateTime @default(now())
-  updatedAt         DateTime @updatedAt
 
-  clinic            Clinic            @relation(fields: [clinicId], references: [id], onDelete: Cascade)
-  medicalHistory    MedicalHistory?
-  dentalHistory     DentalHistory?
-  appointments      Appointment[]
-  clinicalRecords   ClinicalRecord[]
-  treatmentRecords  TreatmentRecord[]
-  toothRecords      ToothRecord[]
-  prescriptions     Prescription[]
-  attachments       Attachment[]
-  invoices          Invoice[]
+  // ----------------------------------------------------------
+  // MEDICAL / ALERT INFORMATION
+  // ----------------------------------------------------------
+
+  allergies          String?
+  medicalAlerts      String?
+  currentMedications String?
+  previousSurgeries  String?
+
+  // ----------------------------------------------------------
+  // DENTAL BACKGROUND
+  // Free-text dental history captured directly on the
+  // combined patient + clinical entry form.
+  // (Named "dentalHistoryNotes" to avoid colliding with the
+  // dentalHistory relation below.)
+  // ----------------------------------------------------------
+
+  dentalHistoryNotes String?
+
+  // ----------------------------------------------------------
+  // CLINICAL ENTRY
+  // Patient + Clinical information are combined
+  // ----------------------------------------------------------
+
+  visitDate      DateTime?
+  chiefComplaint String?
+  examination    String?
+  diagnosis      String?
+  clinicalNotes  String?
+  treatmentPlan  String?
+  followUpDate   DateTime?
+
+  // ----------------------------------------------------------
+  // SYSTEM DATES
+  // ----------------------------------------------------------
+
+  registeredAt DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // ----------------------------------------------------------
+  // RELATIONS
+  // ----------------------------------------------------------
+
+  clinic           Clinic             @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  medicalHistory   MedicalHistory?
+  dentalHistory    DentalHistory?
+  appointments     Appointment[]
+  treatmentRecords TreatmentRecord[]
+  toothRecords     ToothRecord[]
+  prescriptions    Prescription[]
+  attachments      Attachment[]
+  invoices         Invoice[]
+
+  // ----------------------------------------------------------
+  // INDEXES
+  // ----------------------------------------------------------
 
   @@unique([clinicId, patientNumber])
   @@index([clinicId])
   @@index([phone])
   @@index([firstName, lastName])
+  @@index([visitDate])
 }
+
 
 // ============================================================
 // MEDICAL HISTORY
 // ============================================================
 
 model MedicalHistory {
-  id                 String   @id @default(cuid())
-  patientId          String   @unique
-  diabetes           Boolean  @default(false)
-  hypertension       Boolean  @default(false)
-  heartDisease       Boolean  @default(false)
-  asthma             Boolean  @default(false)
-  bleedingDisorder   Boolean  @default(false)
-  kidneyDisease      Boolean  @default(false)
-  liverDisease       Boolean  @default(false)
-  thyroidDisease     Boolean  @default(false)
-  epilepsy           Boolean  @default(false)
-  pregnancy          Boolean  @default(false)
-  smoker             Boolean  @default(false)
-  tobaccoUse         Boolean  @default(false)
-  alcoholUse         Boolean  @default(false)
+  id                  String   @id @default(cuid())
+  patientId           String   @unique
+
+  diabetes            Boolean  @default(false)
+  hypertension        Boolean  @default(false)
+  heartDisease        Boolean  @default(false)
+  asthma              Boolean  @default(false)
+  bleedingDisorder    Boolean  @default(false)
+  kidneyDisease       Boolean  @default(false)
+  liverDisease        Boolean  @default(false)
+  thyroidDisease      Boolean  @default(false)
+  epilepsy            Boolean  @default(false)
+  pregnancy           Boolean  @default(false)
+  smoker              Boolean  @default(false)
+  tobaccoUse          Boolean  @default(false)
+  alcoholUse          Boolean  @default(false)
+
   currentMedications  String?
   previousSurgeries   String?
   otherConditions     String?
   familyHistory       String?
+
   updatedAt           DateTime @updatedAt
 
   patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
@@ -245,22 +296,25 @@ model MedicalHistory {
 // ============================================================
 
 model DentalHistory {
-  id                String   @id @default(cuid())
-  patientId         String   @unique
-  previousDentist   String?
-  lastDentalVisit   DateTime?
-  brushingFrequency String?
-  flossingFrequency String?
-  sensitivity       Boolean  @default(false)
-  gumBleeding       Boolean  @default(false)
-  toothPain         Boolean  @default(false)
-  previousRootCanal Boolean  @default(false)
-  previousExtraction Boolean @default(false)
-  dentures          Boolean  @default(false)
-  implants          Boolean  @default(false)
-  braces            Boolean  @default(false)
+  id                 String   @id @default(cuid())
+  patientId          String   @unique
+
+  previousDentist    String?
+  lastDentalVisit    DateTime?
+  brushingFrequency  String?
+  flossingFrequency  String?
+  sensitivity        Boolean  @default(false)
+  gumBleeding        Boolean  @default(false)
+  toothPain          Boolean  @default(false)
+  previousRootCanal  Boolean  @default(false)
+  previousExtraction Boolean  @default(false)
+  dentures           Boolean  @default(false)
+  implants           Boolean  @default(false)
+  braces             Boolean  @default(false)
+
   previousTreatments String?
   dentalNotes        String?
+
   updatedAt          DateTime @updatedAt
 
   patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
@@ -277,6 +331,10 @@ model Appointment {
   doctorId    String?
   createdById String?
 
+  // ----------------------------------------------------------
+  // APPOINTMENT INFORMATION
+  // ----------------------------------------------------------
+
   patientName String
   phone       String
   date        DateTime
@@ -288,50 +346,26 @@ model Appointment {
   status      AppointmentStatus @default(PENDING)
   notes       String?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // ----------------------------------------------------------
+  // RELATIONS
+  // ----------------------------------------------------------
 
   clinic    Clinic     @relation(fields: [clinicId], references: [id], onDelete: Cascade)
   patient   Patient?   @relation(fields: [patientId], references: [id], onDelete: SetNull)
   doctor    Doctor?    @relation(fields: [doctorId], references: [id], onDelete: SetNull)
   createdBy AdminUser? @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
-  clinicalRecords ClinicalRecord[]
+  // ----------------------------------------------------------
+  // INDEXES
+  // ----------------------------------------------------------
 
   @@index([clinicId, date])
   @@index([patientId])
   @@index([doctorId, date])
   @@index([createdById])
-}
-
-// ============================================================
-// CLINICAL RECORD
-// ============================================================
-
-model ClinicalRecord {
-  id             String             @id @default(cuid())
-  patientId      String
-  doctorId       String?
-  appointmentId  String?
-  type           ClinicalRecordType @default(CONSULTATION)
-  chiefComplaint String?
-  examination    String?
-  diagnosis      String?
-  clinicalNotes  String?
-  followUpDate   DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  createdById    String?
-
-  patient     Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  doctor      Doctor?      @relation(fields: [doctorId], references: [id], onDelete: SetNull)
-  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
-  createdBy   AdminUser?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
-
-  treatmentRecords TreatmentRecord[]
-  attachments     Attachment[]
-
-  @@index([patientId, createdAt])
 }
 
 // ============================================================
@@ -341,21 +375,40 @@ model ClinicalRecord {
 model ToothRecord {
   id              String   @id @default(cuid())
   patientId       String
+
+  // ----------------------------------------------------------
+  // TOOTH INFORMATION
+  // region REMOVED
+  // ----------------------------------------------------------
+
   toothNumber     String
-  region          String?
   condition       String?
   diagnosis       String?
   notes           String?
+
+  // ----------------------------------------------------------
+  // TOOTH SURFACES
+  // ----------------------------------------------------------
+
   surfaceMesial   Boolean  @default(false)
   surfaceDistal   Boolean  @default(false)
   surfaceOcclusal Boolean  @default(false)
   surfaceBuccal   Boolean  @default(false)
   surfaceLingual  Boolean  @default(false)
+
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  // ----------------------------------------------------------
+  // RELATIONS
+  // ----------------------------------------------------------
+
   patient         Patient          @relation(fields: [patientId], references: [id], onDelete: Cascade)
   treatmentRecords TreatmentRecord[]
+
+  // ----------------------------------------------------------
+  // INDEXES
+  // ----------------------------------------------------------
 
   @@index([patientId, toothNumber])
 }
@@ -368,26 +421,38 @@ model TreatmentRecord {
   id               String          @id @default(cuid())
   patientId        String
   doctorId         String?
-  clinicalRecordId String?
   treatmentId      String?
   toothRecordId    String?
+
   treatmentName    String
   diagnosis        String?
   notes            String?
+
   status           TreatmentStatus @default(PLANNED)
+
   scheduledDate    DateTime?
   completedDate    DateTime?
+
   cost             Decimal?        @db.Decimal(12, 2)
+
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
 
+  // ----------------------------------------------------------
+  // RELATIONS
+  // clinicalRecordId REMOVED
+  // ----------------------------------------------------------
+
   patient        Patient         @relation(fields: [patientId], references: [id], onDelete: Cascade)
   doctor         Doctor?         @relation(fields: [doctorId], references: [id], onDelete: SetNull)
-  clinicalRecord ClinicalRecord? @relation(fields: [clinicalRecordId], references: [id], onDelete: SetNull)
   treatment      Treatment?      @relation(fields: [treatmentId], references: [id], onDelete: SetNull)
   toothRecord    ToothRecord?    @relation(fields: [toothRecordId], references: [id], onDelete: SetNull)
 
-  invoiceItems InvoiceItem[]
+  invoiceItems   InvoiceItem[]
+
+  // ----------------------------------------------------------
+  // INDEXES
+  // ----------------------------------------------------------
 
   @@index([patientId, createdAt])
 }
@@ -400,6 +465,7 @@ model Prescription {
   id               String   @id @default(cuid())
   patientId        String
   doctorId         String?
+
   prescriptionDate DateTime @default(now())
   notes            String?
   createdAt        DateTime @default(now())
@@ -412,9 +478,14 @@ model Prescription {
   @@index([patientId, prescriptionDate])
 }
 
+// ============================================================
+// PRESCRIPTION ITEMS
+// ============================================================
+
 model PrescriptionItem {
   id             String @id @default(cuid())
   prescriptionId String
+
   medicine       String
   dosage         String?
   frequency      String?
@@ -429,43 +500,58 @@ model PrescriptionItem {
 // ============================================================
 
 model Attachment {
-  id              String         @id @default(cuid())
-  patientId       String
-  clinicalRecordId String?
-  name            String
-  type            AttachmentType @default(OTHER)
-  mimeType        String
-  size            Int
-  url             String?
-  storageKey      String?
-  description     String?
-  createdAt       DateTime       @default(now())
+  id          String         @id @default(cuid())
+  patientId   String
 
-  patient        Patient         @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  clinicalRecord ClinicalRecord? @relation(fields: [clinicalRecordId], references: [id], onDelete: SetNull)
+  name        String
+  type        AttachmentType @default(OTHER)
+  mimeType    String
+  size        Int
+
+  url         String?
+  storageKey  String?
+  description String?
+
+  createdAt   DateTime @default(now())
+
+  // ----------------------------------------------------------
+  // RELATIONS
+  // clinicalRecordId REMOVED
+  // ----------------------------------------------------------
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
 
   @@index([patientId, createdAt])
 }
 
 // ============================================================
-// BILLING
+// BILLING / INVOICE
 // ============================================================
 
 model Invoice {
   id            String        @id @default(cuid())
   clinicId      String
   patientId     String
+
   invoiceNumber String
   status        InvoiceStatus @default(UNPAID)
+
   subtotal      Decimal       @db.Decimal(12, 2)
   discount      Decimal       @default(0) @db.Decimal(12, 2)
   tax           Decimal       @default(0) @db.Decimal(12, 2)
   total         Decimal       @db.Decimal(12, 2)
+
   notes         String?
+
   invoiceDate   DateTime      @default(now())
   dueDate       DateTime?
+
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
+
+  // ----------------------------------------------------------
+  // RELATIONS
+  // ----------------------------------------------------------
 
   clinic  Clinic  @relation(fields: [clinicId], references: [id], onDelete: Cascade)
   patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
@@ -473,15 +559,24 @@ model Invoice {
   items    InvoiceItem[]
   payments Payment[]
 
+  // ----------------------------------------------------------
+  // INDEXES
+  // ----------------------------------------------------------
+
   @@unique([clinicId, invoiceNumber])
   @@index([patientId, invoiceDate])
 }
+
+// ============================================================
+// INVOICE ITEMS
+// ============================================================
 
 model InvoiceItem {
   id                String   @id @default(cuid())
   invoiceId         String
   treatmentId       String?
   treatmentRecordId String?
+
   description       String
   quantity          Int      @default(1)
   unitPrice         Decimal  @db.Decimal(12, 2)
@@ -492,13 +587,19 @@ model InvoiceItem {
   treatmentRecord TreatmentRecord? @relation(fields: [treatmentRecordId], references: [id], onDelete: SetNull)
 }
 
+// ============================================================
+// PAYMENTS
+// ============================================================
+
 model Payment {
   id          String        @id @default(cuid())
   invoiceId   String
+
   amount      Decimal       @db.Decimal(12, 2)
   method      PaymentMethod
   reference   String?
   notes       String?
+
   paymentDate DateTime      @default(now())
   createdAt   DateTime      @default(now())
 
@@ -514,11 +615,14 @@ model Payment {
 model AuditLog {
   id         String   @id @default(cuid())
   userId     String?
+
   action     String
   entityType String
   entityId   String?
+
   metadata   Json?
   ipAddress  String?
+
   createdAt  DateTime @default(now())
 
   user AdminUser? @relation(fields: [userId], references: [id], onDelete: SetNull)

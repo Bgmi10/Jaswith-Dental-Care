@@ -9,12 +9,12 @@ import {
   deletePatient,
   logout,
   saveAppointment,
+  saveAttachment,
   saveBill,
-  saveClinical,
   savePatient,
   savePrescription,
-  updateClinic,
 } from "./actions";
+
 import Setting from "./Setting";
 
 /* ============================================================
@@ -25,17 +25,25 @@ type Patient = {
   id: string;
   patientNumber: string;
   firstName: string;
-  age: number | null ;
   lastName: string | null;
+  age: number | null;
   dateOfBirth: string | null;
   gender: string | null;
   phone: string;
   email: string | null;
   occupation: string | null;
   allergies: string | null;
-  notes: string | null;
-  medicalHistory?: any;
-  dentalHistory?: any;
+  medicalAlerts: string | null;
+
+  /*
+   * Clinical information lives directly on the
+   * patient record (combined patient + clinical entry).
+   */
+  visitDate?: string | null;
+  diagnosis?: string | null;
+  treatmentPlan?: string | null;
+  clinicalNotes?: string | null;
+  followUpDate?: string | null;
 };
 
 type Appointment = {
@@ -73,18 +81,6 @@ type Testimonial = {
   name: string;
   review: string;
   rating: number | null;
-};
-
-type ClinicalRecord = {
-  id: string;
-  patientId: string;
-  date: string;
-  diagnosis: string | null;
-  clinicalNotes: string | null;
-  followUpDate: string | null;
-  treatmentRecords?: {
-    treatmentName: string;
-  }[];
 };
 
 type Invoice = {
@@ -127,6 +123,7 @@ type Attachment = {
 
 type Clinic = {
   id: string;
+  patientPrefix: string;
   name: string;
   tagline: string | null;
   phone: string | null;
@@ -148,7 +145,6 @@ type Props = {
   doctors: Doctor[];
   treatments: Treatment[];
   testimonials: Testimonial[];
-  clinical: ClinicalRecord[];
   invoices: Invoice[];
   prescriptions: Prescription[];
   attachments: Attachment[];
@@ -178,25 +174,13 @@ const formatDate = (
 ) => {
   if (!value) return "—";
 
-  return new Date(value).toLocaleDateString("en-IN");
-};
+  const parsed = new Date(value);
 
-const formatDateTime = (
-  date?: string | null,
-  time?: string | null
-) => {
-  if (!date) return "—";
-
-  const d = new Date(date);
-
-  if (Number.isNaN(d.getTime())) {
-    return date;
+  if (Number.isNaN(parsed.getTime())) {
+    return value.slice(0, 10);
   }
 
-  return (
-    d.toLocaleDateString("en-IN") +
-    (time ? ` ${time}` : "")
-  );
+  return parsed.toLocaleDateString("en-IN");
 };
 
 const fullName = (
@@ -212,6 +196,17 @@ const fullName = (
     .join(" ");
 };
 
+/**
+ * Turn a FormData object into a plain object, the shape
+ * every action in actions.ts actually expects. Server
+ * actions here take `Record<string, unknown>`, not FormData.
+ */
+const toPayload = (
+  formData: FormData
+): Record<string, unknown> => {
+  return Object.fromEntries(formData.entries());
+};
+
 /* ============================================================
    PAGE
 ============================================================ */
@@ -223,7 +218,6 @@ export default function AdminPage({
   doctors: initialDoctors,
   treatments: initialTreatments,
   testimonials: initialTestimonials,
-  clinical: initialClinical,
   invoices: initialInvoices,
   prescriptions: initialPrescriptions,
   attachments: initialAttachments,
@@ -242,9 +236,6 @@ export default function AdminPage({
 
   const [testimonials, setTestimonials] =
     useState(initialTestimonials);
-
-  const [clinical, setClinical] =
-    useState(initialClinical);
 
   const [invoices, setInvoices] =
     useState(initialInvoices);
@@ -267,9 +258,6 @@ export default function AdminPage({
   const [patientSearch, setPatientSearch] =
     useState("");
 
-  const [clinicalSearch, setClinicalSearch] =
-    useState("");
-
   const [billSearch, setBillSearch] =
     useState("");
 
@@ -282,20 +270,12 @@ export default function AdminPage({
   const [uploadingFile, setUploadingFile] =
     useState(false);
 
-  const [settings, setSettings] =
-    useState({
-      clinicName: clinic.name,
-      doctor: "Dr. J. Sailakshmi, MDS",
-      currency: "₹",
-    });
-
   useEffect(() => {
     setPatients(initialPatients);
     setAppointments(initialAppointments);
     setDoctors(initialDoctors);
     setTreatments(initialTreatments);
     setTestimonials(initialTestimonials);
-    setClinical(initialClinical);
     setInvoices(initialInvoices);
     setPrescriptions(initialPrescriptions);
     setAttachments(initialAttachments);
@@ -305,7 +285,6 @@ export default function AdminPage({
     initialDoctors,
     initialTreatments,
     initialTestimonials,
-    initialClinical,
     initialInvoices,
     initialPrescriptions,
     initialAttachments,
@@ -348,15 +327,8 @@ export default function AdminPage({
 
     const uploadData = new FormData();
 
-    uploadData.append(
-      "file",
-      file
-    );
-
-    uploadData.append(
-      "folder",
-      folder
-    );
+    uploadData.append("file", file);
+    uploadData.append("folder", folder);
 
     const response = await fetch(
       "/api/upload",
@@ -403,10 +375,7 @@ export default function AdminPage({
     title: string,
     body: React.ReactNode
   ) => {
-    setModal({
-      title,
-      body,
-    });
+    setModal({ title, body });
   };
 
   const closeModal = () => {
@@ -417,9 +386,7 @@ export default function AdminPage({
      PATIENT OPTIONS
   ========================================================== */
 
-  const patientOptions = (
-    selected?: string | null
-  ) => {
+  const patientOptions = () => {
     return (
       <>
         <option value="">
@@ -430,9 +397,6 @@ export default function AdminPage({
           <option
             key={patient.id}
             value={patient.id}
-            selected={
-              patient.id === selected
-            }
           >
             {patient.patientNumber} —{" "}
             {fullName(patient)}
@@ -443,7 +407,17 @@ export default function AdminPage({
   };
 
   /* ==========================================================
-     NEW PATIENT
+     COMBINED PATIENT + CLINICAL ENTRY
+
+     This single form is submitted straight to savePatient(),
+     which now stores demographic info AND the clinical entry
+     (visitDate / diagnosis / treatmentPlan / clinicalNotes /
+     followUpDate) on the same Patient record.
+
+     - patientNumber (Patient ID) is never sent: it is always
+       generated server-side.
+     - There is no consent / patient-notes field.
+     - There is no tooth region or procedures field.
   ========================================================== */
 
   const newPatient = (
@@ -453,16 +427,26 @@ export default function AdminPage({
       formData: FormData
     ) => {
       try {
+        const payload: Record<string, unknown> = {
+          clinicId: clinic.id,
+          ...toPayload(formData),
+        };
+
         if (patient?.id) {
-          formData.set(
-            "id",
-            patient.id
-          );
+          payload.id = patient.id;
         }
 
-        await savePatient(
-          formData
-        );
+        /*
+         * Patient ID (patientNumber) must always be
+         * generated by the backend.
+         */
+        delete payload.patientNumber;
+
+        const result = await savePatient(payload);
+
+        if (!result.success) {
+          throw new Error(result.error);
+        }
 
         closeModal();
 
@@ -479,27 +463,25 @@ export default function AdminPage({
     openModal(
       patient
         ? "Edit patient"
-        : "New patient",
+        : "New patient & clinical entry",
       <form
         action={formAction}
         className="space-y-5"
       >
+        {/* ================================================
+            PATIENT IDENTIFICATION
+        ================================================ */}
+        <div className="section-title">
+          <h3>
+            Patient details
+          </h3>
+
+          <span>
+            Basic patient information
+          </span>
+        </div>
+
         <div className="grid">
-          <div>
-            <label>
-              Patient ID
-            </label>
-
-            <input
-              name="patientNumber"
-              defaultValue={
-                patient?.patientNumber ||
-                ""
-              }
-              required
-            />
-          </div>
-
           <div>
             <label>
               First name *
@@ -528,18 +510,22 @@ export default function AdminPage({
           </div>
 
           <div>
-  <label>Age</label>
+            <label>
+              Age
+            </label>
 
-  <input
-    name="age"
-    type="number"
-    min="0"
-    max="150"
-    step="1"
-    defaultValue={patient?.age ?? ""}
-    placeholder="Age"
-  />
-</div>
+            <input
+              name="age"
+              type="number"
+              min="0"
+              max="150"
+              step="1"
+              defaultValue={
+                patient?.age ?? ""
+              }
+              placeholder="Age"
+            />
+          </div>
 
           <div>
             <label>
@@ -552,7 +538,9 @@ export default function AdminPage({
                 patient?.gender || ""
               }
             >
-              <option value=""></option>
+              <option value="">
+                Select gender
+              </option>
 
               <option value="Female">
                 Female
@@ -570,7 +558,7 @@ export default function AdminPage({
 
           <div>
             <label>
-              Phone
+              Phone *
             </label>
 
             <input
@@ -578,6 +566,7 @@ export default function AdminPage({
               defaultValue={
                 patient?.phone || ""
               }
+              required
             />
           </div>
 
@@ -603,16 +592,25 @@ export default function AdminPage({
             <input
               name="occupation"
               defaultValue={
-                patient?.occupation ||
-                ""
+                patient?.occupation || ""
               }
             />
           </div>
         </div>
 
-        <h3>
-          Medical history
-        </h3>
+        {/* ================================================
+            MEDICAL ALERTS
+        ================================================ */}
+
+        <div className="section-title">
+          <h3>
+            Medical alerts
+          </h3>
+
+          <span>
+            Relevant medical information
+          </span>
+        </div>
 
         <div className="grid">
           <div>
@@ -623,88 +621,131 @@ export default function AdminPage({
             <textarea
               name="allergies"
               defaultValue={
-                patient?.allergies ||
-                ""
+                patient?.allergies || ""
               }
             />
           </div>
 
           <div>
             <label>
-              Medical alerts
+              Other medical alerts
             </label>
 
             <textarea
               name="medicalAlerts"
               defaultValue={
-                patient
-                  ?.medicalHistory
-                  ?.otherConditions ||
-                ""
-              }
-            />
-          </div>
-
-          <div>
-            <label>
-              Current medications
-            </label>
-
-            <textarea
-              name="currentMedications"
-              defaultValue={
-                patient
-                  ?.medicalHistory
-                  ?.currentMedications ||
-                ""
-              }
-            />
-          </div>
-
-          <div>
-            <label>
-              Previous surgeries
-            </label>
-
-            <textarea
-              name="previousSurgeries"
-              defaultValue={
-                patient
-                  ?.medicalHistory
-                  ?.previousSurgeries ||
-                ""
+                patient?.medicalAlerts || ""
               }
             />
           </div>
         </div>
 
-        <h3>
-          Dental history
-        </h3>
+        {/* ================================================
+            CLINICAL ENTRY (combined with patient record)
+        ================================================ */}
 
-        <textarea
-          name="dentalNotes"
-          defaultValue={
-            patient
-              ?.dentalHistory
-              ?.dentalNotes || ""
-          }
-        />
+        <div className="section-title">
+          <h3>
+            Clinical entry
+          </h3>
 
-        <h3>
-          Consent / notes
-        </h3>
+          <span>
+            Diagnosis and treatment information
+          </span>
+        </div>
 
-        <textarea
-          name="notes"
-          defaultValue={
-            patient?.notes || ""
-          }
-        />
+        <div className="grid">
+          <div>
+            <label>
+              Visit date *
+            </label>
+
+            <input
+              name="visitDate"
+              type="date"
+              defaultValue={
+                patient?.visitDate
+                  ? patient.visitDate.slice(0, 10)
+                  : today()
+              }
+              required
+            />
+          </div>
+
+          <div>
+            <label>
+              Follow-up date
+            </label>
+
+            <input
+              name="followUpDate"
+              type="date"
+              defaultValue={
+                patient?.followUpDate
+                  ? patient.followUpDate.slice(0, 10)
+                  : ""
+              }
+            />
+          </div>
+
+          <div>
+            <label>
+              Diagnosis
+            </label>
+
+            <input
+              name="diagnosis"
+              defaultValue={
+                patient?.diagnosis || ""
+              }
+              placeholder="Enter diagnosis"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label>
+            Treatment plan
+          </label>
+
+          <textarea
+            name="treatmentPlan"
+            defaultValue={
+              patient?.treatmentPlan || ""
+            }
+            placeholder="Enter treatment plan"
+          />
+        </div>
+
+        <div>
+          <label>
+            Clinical notes
+          </label>
+
+          <textarea
+            name="clinicalNotes"
+            defaultValue={
+              patient?.clinicalNotes || ""
+            }
+            placeholder="Enter clinical notes for this visit"
+          />
+        </div>
+
+        {/* ================================================
+            ACTIONS
+        ================================================ */}
 
         <div className="actions">
           <button type="submit">
             Save patient
+          </button>
+
+          <button
+            type="button"
+            className="secondary"
+            onClick={closeModal}
+          >
+            Cancel
           </button>
         </div>
       </form>
@@ -722,44 +763,34 @@ export default function AdminPage({
       formData: FormData
     ) => {
       try {
+        const patientId =
+          formData.get("patientId")?.toString();
+
+        const selectedPatient = patients.find(
+          (p) => p.id === patientId
+        );
+
+        const payload: Record<string, unknown> = {
+          clinicId: clinic.id,
+          ...toPayload(formData),
+          patientName: selectedPatient
+            ? fullName(selectedPatient)
+            : appointment?.patientName || "",
+          phone:
+            selectedPatient?.phone ||
+            appointment?.phone ||
+            "",
+        };
+
         if (appointment?.id) {
-          formData.set(
-            "id",
-            appointment.id
-          );
+          payload.id = appointment.id;
         }
 
-        const patientId =
-          formData
-            .get("patientId")
-            ?.toString();
+        const result = await saveAppointment(payload);
 
-        const selectedPatient =
-          patients.find(
-            (p) =>
-              p.id === patientId
-          );
-
-        formData.set(
-          "patientName",
-          selectedPatient
-            ? fullName(
-                selectedPatient
-              )
-            : appointment?.patientName ||
-                ""
-        );
-
-        formData.set(
-          "phone",
-          selectedPatient?.phone ||
-            appointment?.phone ||
-            ""
-        );
-
-        await saveAppointment(
-          formData
-        );
+        if (!result.success) {
+          throw new Error(result.error);
+        }
 
         closeModal();
 
@@ -774,43 +805,51 @@ export default function AdminPage({
     };
 
     openModal(
-      "Appointment",
+      appointment
+        ? "Edit appointment"
+        : "New appointment",
       <form
         action={formAction}
         className="space-y-4"
       >
+        <div className="section-title">
+          <h3>
+            Patient visit
+          </h3>
+
+          <span>
+            Schedule the patient's visit
+          </span>
+        </div>
+
         <div className="grid">
           <div>
             <label>
-              Patient
+              Patient *
             </label>
 
             <select
               name="patientId"
               defaultValue={
-                appointment?.patientId ||
-                ""
+                appointment?.patientId || ""
               }
               required
             >
-              {patientOptions(
-                appointment?.patientId
-              )}
+              {patientOptions()}
             </select>
           </div>
 
           <div>
-            <label>Date</label>
+            <label>
+              Visit date *
+            </label>
 
             <input
               name="date"
               type="date"
               defaultValue={
                 appointment?.date
-                  ? appointment.date.slice(
-                      0,
-                      10
-                    )
+                  ? appointment.date.slice(0, 10)
                   : today()
               }
               required
@@ -818,14 +857,15 @@ export default function AdminPage({
           </div>
 
           <div>
-            <label>Time</label>
+            <label>
+              Visit time
+            </label>
 
             <input
               name="time"
               type="time"
               defaultValue={
-                appointment?.time ||
-                ""
+                appointment?.time || ""
               }
             />
           </div>
@@ -838,10 +878,9 @@ export default function AdminPage({
             <input
               name="reason"
               defaultValue={
-                appointment?.reason ||
-                ""
+                appointment?.reason || ""
               }
-              placeholder="Consultation / RCT / crown / denture..."
+              placeholder="Consultation / follow-up / emergency..."
             />
           </div>
 
@@ -853,8 +892,7 @@ export default function AdminPage({
             <input
               name="treatment"
               defaultValue={
-                appointment?.treatment ||
-                ""
+                appointment?.treatment || ""
               }
             />
           </div>
@@ -867,8 +905,7 @@ export default function AdminPage({
             <select
               name="status"
               defaultValue={
-                appointment?.status ||
-                "PENDING"
+                appointment?.status || "PENDING"
               }
             >
               <option value="PENDING">
@@ -902,191 +939,41 @@ export default function AdminPage({
           </div>
         </div>
 
-        <label>Notes</label>
+        <label>
+          Notes
+        </label>
 
         <textarea
           name="notes"
           defaultValue={
-            appointment?.notes ||
-            ""
+            appointment?.notes || ""
           }
         />
 
-        <button type="submit">
-          Save
-        </button>
-      </form>
-    );
-  };
+        <div className="actions">
+          <button type="submit">
+            Save appointment
+          </button>
 
-  /* ==========================================================
-     CLINICAL
-  ========================================================== */
-
-  const newClinical = (
-    record?: ClinicalRecord
-  ) => {
-    const formAction = async (
-      formData: FormData
-    ) => {
-      try {
-        if (record?.id) {
-          formData.set(
-            "id",
-            record.id
-          );
-        }
-
-        await saveClinical(
-          formData
-        );
-
-        closeModal();
-
-        window.location.reload();
-      } catch (error) {
-        alert(
-          error instanceof Error
-            ? error.message
-            : "Unable to save clinical record"
-        );
-      }
-    };
-
-    const existingProcedure =
-      record
-        ?.treatmentRecords?.[0]
-        ?.treatmentName || "";
-
-    openModal(
-      "Clinical entry",
-      <form
-        action={formAction}
-        className="space-y-4"
-      >
-        <div className="grid">
-          <div>
-            <label>
-              Patient
-            </label>
-
-            <select
-              name="patientId"
-              defaultValue={
-                record?.patientId ||
-                ""
-              }
-              required
-            >
-              {patientOptions(
-                record?.patientId
-              )}
-            </select>
-          </div>
-
-          <div>
-            <label>Date</label>
-
-            <input
-              name="date"
-              type="date"
-              defaultValue={
-                record?.date
-                  ? record.date.slice(
-                      0,
-                      10
-                    )
-                  : today()
-              }
-            />
-          </div>
-
-          <div>
-            <label>
-              Tooth / region
-            </label>
-
-            <input
-              name="tooth"
-              placeholder="e.g. 46, 11–21, full arch"
-            />
-          </div>
-
-          <div>
-            <label>
-              Procedure
-            </label>
-
-            <input
-              name="procedure"
-              defaultValue={
-                existingProcedure
-              }
-              placeholder="RCT / crown / denture / implant..."
-            />
-          </div>
-
-          <div>
-            <label>
-              Diagnosis
-            </label>
-
-            <input
-              name="diagnosis"
-              defaultValue={
-                record?.diagnosis ||
-                ""
-              }
-            />
-          </div>
-
-          <div>
-            <label>
-              Next visit
-            </label>
-
-            <input
-              name="nextVisit"
-              type="date"
-              defaultValue={
-                record?.followUpDate
-                  ? record.followUpDate.slice(
-                      0,
-                      10
-                    )
-                  : ""
-              }
-            />
-          </div>
+          <button
+            type="button"
+            className="secondary"
+            onClick={closeModal}
+          >
+            Cancel
+          </button>
         </div>
-
-        <label>
-          Clinical notes
-        </label>
-
-        <textarea
-          name="notes"
-          defaultValue={
-            record?.clinicalNotes ||
-            ""
-          }
-        />
-
-        <label>
-          Materials / lab details
-        </label>
-
-        <textarea name="lab" />
-
-        <button type="submit">
-          Save
-        </button>
       </form>
     );
   };
 
   /* ==========================================================
      BILL
+
+     saveBill() expects `items` as an array of
+     { description, amount }, not raw text, so the textarea
+     is parsed before the action is called. If a "paid now"
+     amount is entered, addPayment() is called right after.
   ========================================================== */
 
   const newBill = () => {
@@ -1094,9 +981,56 @@ export default function AdminPage({
       formData: FormData
     ) => {
       try {
-        await saveBill(
-          formData
-        );
+        const raw = toPayload(formData);
+
+        const itemsText = String(raw.items || "");
+
+        const items = itemsText
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => {
+            const [description, amount] = line
+              .split("|")
+              .map((part) => part.trim());
+
+            return {
+              description: description || "Item",
+              amount: Number(amount) || 0,
+            };
+          });
+
+        const payload: Record<string, unknown> = {
+          clinicId: clinic.id,
+          patientId: raw.patientId,
+          invoiceDate: raw.date,
+          invoiceNumber: raw.invoiceNumber,
+          items,
+          discount: raw.discount,
+          tax: raw.tax,
+          total: raw.total,
+          notes: raw.notes,
+        };
+
+        const result = await saveBill(payload);
+
+        if (!result.success) {
+          throw new Error(result.error);
+        }
+
+        const paidNow = Number(raw.paid || 0);
+
+        if (paidNow > 0 && result.invoice?.id) {
+          const paymentResult = await addPayment({
+            invoiceId: result.invoice.id,
+            amount: paidNow,
+            method: raw.method,
+          });
+
+          if (!paymentResult.success) {
+            throw new Error(paymentResult.error);
+          }
+        }
 
         closeModal();
 
@@ -1131,7 +1065,9 @@ export default function AdminPage({
           </div>
 
           <div>
-            <label>Date</label>
+            <label>
+              Date
+            </label>
 
             <input
               name="date"
@@ -1147,9 +1083,7 @@ export default function AdminPage({
 
             <input
               name="invoiceNumber"
-              defaultValue={`INV-${String(
-                invoices.length + 1
-              ).padStart(4, "0")}`}
+              placeholder="Leave blank to auto-generate"
             />
           </div>
 
@@ -1197,7 +1131,9 @@ RCT | 5000`}
 
         <div className="grid">
           <div>
-            <label>Total</label>
+            <label>
+              Total
+            </label>
 
             <input
               name="total"
@@ -1221,7 +1157,9 @@ RCT | 5000`}
           </div>
 
           <div>
-            <label>Tax</label>
+            <label>
+              Tax
+            </label>
 
             <input
               name="tax"
@@ -1245,19 +1183,35 @@ RCT | 5000`}
           </div>
         </div>
 
-        <label>Notes</label>
+        <label>
+          Notes
+        </label>
 
         <textarea name="notes" />
 
-        <button type="submit">
-          Save
-        </button>
+        <div className="actions">
+          <button type="submit">
+            Save bill
+          </button>
+
+          <button
+            type="button"
+            className="secondary"
+            onClick={closeModal}
+          >
+            Cancel
+          </button>
+        </div>
       </form>
     );
   };
 
   /* ==========================================================
      PRESCRIPTION
+
+     savePrescription() expects `items` as an array of
+     { medicine, instructions }, so the textarea (one
+     medicine per line) is parsed before calling the action.
   ========================================================== */
 
   const newPrescription = () => {
@@ -1265,9 +1219,32 @@ RCT | 5000`}
       formData: FormData
     ) => {
       try {
-        await savePrescription(
-          formData
+        const raw = toPayload(formData);
+
+        const medicineLines = String(raw.text || "")
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+
+        const items = medicineLines.map(
+          (medicine) => ({
+            medicine,
+            instructions: String(raw.instructions || ""),
+          })
         );
+
+        const payload: Record<string, unknown> = {
+          patientId: raw.patientId,
+          prescriptionDate: raw.date,
+          notes: raw.instructions,
+          items,
+        };
+
+        const result = await savePrescription(payload);
+
+        if (!result.success) {
+          throw new Error(result.error);
+        }
 
         closeModal();
 
@@ -1302,7 +1279,9 @@ RCT | 5000`}
           </div>
 
           <div>
-            <label>Date</label>
+            <label>
+              Date
+            </label>
 
             <input
               name="date"
@@ -1328,19 +1307,29 @@ Paracetamol 500mg — SOS`}
 
         <textarea name="instructions" />
 
-        <button type="submit">
-          Save
-        </button>
+        <div className="actions">
+          <button type="submit">
+            Save
+          </button>
 
-        <button
-          type="button"
-          className="secondary"
-          onClick={() =>
-            window.print()
-          }
-        >
-          Print
-        </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() =>
+              window.print()
+            }
+          >
+            Print
+          </button>
+
+          <button
+            type="button"
+            className="secondary"
+            onClick={closeModal}
+          >
+            Cancel
+          </button>
+        </div>
       </form>
     );
   };
@@ -1352,221 +1341,153 @@ Paracetamol 500mg — SOS`}
   const todayAppointments =
     appointments.filter(
       (appointment) =>
-        appointment.date.slice(
-          0,
-          10
-        ) === today() &&
-        appointment.status !==
-          "CANCELLED"
+        appointment.date.slice(0, 10) === today() &&
+        appointment.status !== "CANCELLED"
     ).length;
 
   const pendingPayments =
-    invoices.reduce(
-      (sum, invoice) => {
-        const paid =
-          invoice.payments.reduce(
-            (
-              total,
-              payment
-            ) =>
-              total +
-              Number(
-                payment.amount
-              ),
-            0
-          );
+    invoices.reduce((sum, invoice) => {
+      const paid = invoice.payments.reduce(
+        (total, payment) =>
+          total + Number(payment.amount),
+        0
+      );
 
-        return (
-          sum +
-          Math.max(
-            0,
-            Number(
-              invoice.total
-            ) - paid
-          )
-        );
-      },
+      return (
+        sum +
+        Math.max(0, Number(invoice.total) - paid)
+      );
+    }, 0);
+
+  const currentMonth = today().slice(0, 7);
+
+  const monthlyRevenue = invoices
+    .filter(
+      (invoice) =>
+        invoice.invoiceDate.slice(0, 7) === currentMonth
+    )
+    .reduce(
+      (sum, invoice) =>
+        sum +
+        invoice.payments.reduce(
+          (total, payment) =>
+            total + Number(payment.amount),
+          0
+        ),
       0
     );
 
-  const currentMonth =
-    today().slice(0, 7);
+  const upcomingDashboardAppointments = useMemo(() => {
+    const now = new Date();
 
-  const monthlyRevenue =
-    invoices
-      .filter((invoice) =>
-        invoice.invoiceDate
-          .slice(0, 7)
-          .startsWith(
-            currentMonth
-          )
+    return appointments
+      .filter(
+        (appointment) =>
+          new Date(appointment.date) >= now &&
+          appointment.status !== "CANCELLED"
       )
-      .reduce(
-        (sum, invoice) =>
-          sum +
-          invoice.payments.reduce(
-            (
-              total,
-              payment
-            ) =>
-              total +
-              Number(
-                payment.amount
-              ),
-            0
-          ),
-        0
-      );
+      .sort(
+        (a, b) =>
+          new Date(a.date).getTime() -
+          new Date(b.date).getTime()
+      )
+      .slice(0, 8);
+  }, [appointments]);
 
   /* ==========================================================
      FILTERED DATA
   ========================================================== */
 
-  const filteredPatients =
-    patients.filter((patient) => {
-      const query =
-        patientSearch.toLowerCase();
+  const filteredPatients = patients.filter((patient) => {
+    const query = patientSearch.toLowerCase();
 
-      return `${fullName(
-        patient
-      )} ${
-        patient.phone
-      } ${
-        patient.patientNumber
-      }`
-        .toLowerCase()
-        .includes(query);
-    });
+    return `${fullName(patient)} ${patient.phone} ${
+      patient.patientNumber
+    }`
+      .toLowerCase()
+      .includes(query);
+  });
 
-  const filteredAppointments =
-    useMemo(() => {
-      let result = [
-        ...appointments,
-      ];
+  const filteredAppointments = useMemo(() => {
+    let result = [...appointments];
 
-      if (
-        appointmentFilter ===
-        "today"
-      ) {
-        result =
-          result.filter(
-            (appointment) =>
-              appointment.date.slice(
-                0,
-                10
-              ) === today()
-          );
-      }
-
-      if (
-        appointmentFilter ===
-        "upcoming"
-      ) {
-        const now =
-          new Date();
-
-        result =
-          result.filter(
-            (appointment) =>
-              new Date(
-                appointment.date
-              ) >= now &&
-              appointment.status !==
-                "CANCELLED"
-          );
-      }
-
-      if (
-        appointmentFilter ===
-        "completed"
-      ) {
-        result =
-          result.filter(
-            (appointment) =>
-              appointment.status ===
-              "COMPLETED"
-          );
-      }
-
-      return result.sort(
-        (a, b) =>
-          new Date(
-            a.date
-          ).getTime() -
-          new Date(
-            b.date
-          ).getTime()
+    if (appointmentFilter === "today") {
+      result = result.filter(
+        (appointment) =>
+          appointment.date.slice(0, 10) === today()
       );
-    }, [
-      appointments,
-      appointmentFilter,
-    ]);
+    }
 
-  const filteredClinical =
-    clinical.filter((record) => {
-      const patient =
-        patients.find(
-          (p) =>
-            p.id ===
-            record.patientId
-        );
+    if (appointmentFilter === "upcoming") {
+      const now = new Date();
 
-      return fullName(patient)
-        .toLowerCase()
-        .includes(
-          clinicalSearch.toLowerCase()
-        );
-    });
+      result = result.filter(
+        (appointment) =>
+          new Date(appointment.date) >= now &&
+          appointment.status !== "CANCELLED"
+      );
+    }
 
-  const filteredInvoices =
-    invoices.filter((invoice) => {
-      const patient =
-        patients.find(
-          (p) =>
-            p.id ===
-            invoice.patientId
-        );
+    if (appointmentFilter === "completed") {
+      result = result.filter(
+        (appointment) =>
+          appointment.status === "COMPLETED"
+      );
+    }
 
-      return fullName(patient)
-        .toLowerCase()
-        .includes(
-          billSearch.toLowerCase()
-        );
-    });
+    return result.sort(
+      (a, b) =>
+        new Date(a.date).getTime() -
+        new Date(b.date).getTime()
+    );
+  }, [appointments, appointmentFilter]);
 
-  const filteredRx =
-    prescriptions.filter(
-      (rx) => {
-        const patient =
-          patients.find(
-            (p) =>
-              p.id ===
-              rx.patientId
-          );
-
-        return fullName(patient)
-          .toLowerCase()
-          .includes(
-            rxSearch.toLowerCase()
-          );
-      }
+  const filteredInvoices = invoices.filter((invoice) => {
+    const patient = patients.find(
+      (p) => p.id === invoice.patientId
     );
 
+    return fullName(patient)
+      .toLowerCase()
+      .includes(billSearch.toLowerCase());
+  });
+
+  const filteredRx = prescriptions.filter((rx) => {
+    const patient = patients.find(
+      (p) => p.id === rx.patientId
+    );
+
+    return fullName(patient)
+      .toLowerCase()
+      .includes(rxSearch.toLowerCase());
+  });
+
   /* ==========================================================
-     PATIENT NAME
+     PATIENT HELPERS
   ========================================================== */
 
-  const patientName = (
-    id: string | null
-  ) => {
+  const patientName = (id: string | null) => {
     if (!id) return "Unknown";
 
-    const patient =
-      patients.find(
-        (p) => p.id === id
-      );
+    const patient = patients.find((p) => p.id === id);
 
     return fullName(patient);
+  };
+
+  const lastVisitDate = (patientId: string) => {
+    const visits = appointments
+      .filter(
+        (appointment) =>
+          appointment.patientId === patientId &&
+          appointment.status === "COMPLETED"
+      )
+      .sort(
+        (a, b) =>
+          new Date(b.date).getTime() -
+          new Date(a.date).getTime()
+      );
+
+    return visits[0]?.date || null;
   };
 
   /* ==========================================================
@@ -1805,6 +1726,57 @@ Paracetamol 500mg — SOS`}
           padding: 18px;
         }
 
+        .info-box {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 15px;
+          padding: 12px 14px;
+          border-radius: 8px;
+          background: #eef7fa;
+          border: 1px solid #cce4eb;
+          color: #17495a;
+        }
+
+        .info-box span {
+          font-weight: normal;
+        }
+
+        .section-title {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 10px;
+          margin-top: 10px;
+          border-bottom: 1px solid var(--line);
+          padding-bottom: 8px;
+        }
+
+        .section-title h3 {
+          margin: 0;
+        }
+
+        .section-title span {
+          color: var(--muted);
+          font-size: 12px;
+        }
+
+        .visit-date {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          padding: 4px 8px;
+          border-radius: 6px;
+          background: #eef7fa;
+          color: #17495a;
+          font-size: 12px;
+          font-weight: bold;
+        }
+
+        .dashboard-visit {
+          border-left: 4px solid var(--p);
+        }
+
         @media (max-width: 700px) {
           .admin-header {
             position: static;
@@ -1813,37 +1785,45 @@ Paracetamol 500mg — SOS`}
           nav {
             top: 0;
           }
+
+          .section-title {
+            display: block;
+          }
+
+          .section-title span {
+            display: block;
+            margin-top: 3px;
+          }
         }
       `}</style>
 
-      {/* ======================================================
+      {/* ==================================================
           HEADER
-      ====================================================== */}
+      ================================================== */}
 
       <header className="admin-header">
         <div
           style={{
             display: "flex",
-            justifyContent:
-              "space-between",
+            justifyContent: "space-between",
             alignItems: "center",
             gap: 15,
           }}
         >
           <div>
             <h1>
-              Jaswith Dental Care
+              {clinic.name || "Jaswith Dental Care"}
             </h1>
 
             <small>
-              Dr. J. Sailakshmi, MDS •
-              Prosthodontist &
-              Implantologist • Clinic
-              Management
+              Dr. J. Sailakshmi, MDS • Prosthodontist &
+              Implantologist • Clinic Management
             </small>
           </div>
 
-          <form action={logout}>
+          <form
+          //@ts-ignore
+          action={logout}>
             <button
               type="submit"
               className="secondary"
@@ -1854,232 +1834,356 @@ Paracetamol 500mg — SOS`}
         </div>
       </header>
 
-      {/* ======================================================
+      {/* ==================================================
           NAV
-      ====================================================== */}
+      ================================================== */}
 
       <nav>
         {[
           "dashboard",
           "patients",
           "appointments",
-          "clinical",
           "billing",
           "prescriptions",
           "files",
           "reports",
           "backup",
-          "settings"
+          "settings",
         ].map((item) => (
           <button
             key={item}
-            className={
-              page === item
-                ? "active"
-                : ""
-            }
-            onClick={() =>
-              setPage(item)
-            }
+            className={page === item ? "active" : ""}
+            onClick={() => setPage(item)}
           >
-            {item
-              .charAt(0)
-              .toUpperCase() +
-              item.slice(1)}
+            {item.charAt(0).toUpperCase() + item.slice(1)}
           </button>
         ))}
       </nav>
 
       <main>
-        {/* ====================================================
+        {/* ================================================
             DASHBOARD
-        ==================================================== */}
+        ================================================ */}
 
         {page === "dashboard" && (
           <>
             <div className="statgrid">
               <div className="stat">
                 Patients
-
-                <b>
-                  {patients.length}
-                </b>
+                <b>{patients.length}</b>
               </div>
 
               <div className="stat">
-                Today's
-                appointments
-
-                <b>
-                  {todayAppointments}
-                </b>
+                Today's appointments
+                <b>{todayAppointments}</b>
               </div>
 
               <div className="stat">
                 Pending payments
-
-                <b>
-                  {money(
-                    pendingPayments
-                  )}
-                </b>
+                <b>{money(pendingPayments)}</b>
               </div>
 
               <div className="stat">
-                This month's
-                revenue
-
-                <b>
-                  {money(
-                    monthlyRevenue
-                  )}
-                </b>
+                This month's revenue
+                <b>{money(monthlyRevenue)}</b>
               </div>
             </div>
 
             <div className="card">
-              <h2>
-                Quick actions
-              </h2>
+              <h2>Quick actions</h2>
 
               <div className="actions">
-                <button
-                  onClick={() =>
-                    newPatient()
-                  }
-                >
+                <button onClick={() => newPatient()}>
                   + New patient
                 </button>
 
-                <button
-                  onClick={() =>
-                    newAppointment()
-                  }
-                >
+                <button onClick={() => newAppointment()}>
                   + Appointment
                 </button>
 
-                <button
-                  onClick={() =>
-                    newBill()
-                  }
-                >
+                <button onClick={() => newBill()}>
                   + Bill / Payment
-                </button>
-
-                <button
-                  onClick={() =>
-                    newClinical()
-                  }
-                >
-                  + Clinical entry
                 </button>
               </div>
             </div>
 
             <div className="card">
-              <h2>
-                Upcoming appointments
-              </h2>
+              <div className="section-title">
+                <h2>Upcoming visits</h2>
 
-              {appointments
-                .filter(
-                  (a) =>
-                    new Date(
-                      a.date
-                    ) >=
-                      new Date() &&
-                    a.status !==
-                      "CANCELLED"
-                )
-                .sort(
-                  (a, b) =>
-                    new Date(
-                      a.date
-                    ).getTime() -
-                    new Date(
-                      b.date
-                    ).getTime()
-                )
-                .slice(0, 8)
-                .map(
-                  (appointment) => (
+                <span>
+                  Scheduled patient visit dates
+                </span>
+              </div>
+
+              {upcomingDashboardAppointments.map(
+                (appointment) => (
+                  <div
+                    className="card dashboard-visit"
+                    key={appointment.id}
+                  >
                     <div
-                      className="card"
-                      key={
-                        appointment.id
-                      }
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        gap: 10,
+                        flexWrap: "wrap",
+                      }}
                     >
-                      <b>
-                        {formatDateTime(
-                          appointment.date,
-                          appointment.time
+                      <div>
+                        <span className="visit-date">
+                          Visit Date:{" "}
+                          {formatDate(appointment.date)}
+                        </span>
+
+                        {appointment.time && (
+                          <span
+                            className="muted"
+                            style={{ marginLeft: 8 }}
+                          >
+                            {appointment.time}
+                          </span>
                         )}
-                      </b>
+                      </div>
 
-                      {" • "}
-
-                      {patientName(
-                        appointment.patientId
-                      )}
-
-                      <br />
-
-                      {appointment.reason}
-
-                      {" "}
-
-                      <span className="badge">
-                        {
-                          appointment.status
-                        }
+                      <span
+                        className={`badge ${
+                          appointment.status === "COMPLETED"
+                            ? "ok"
+                            : appointment.status === "CANCELLED"
+                            ? "warn"
+                            : ""
+                        }`}
+                      >
+                        {appointment.status}
                       </span>
                     </div>
-                  )
-                )}
 
-              {appointments.length ===
-                0 && (
+                    <div style={{ marginTop: 9 }}>
+                      <b>
+                        {patientName(appointment.patientId)}
+                      </b>
+
+                      {appointment.reason && (
+                        <>
+                          {" • "}
+                          {appointment.reason}
+                        </>
+                      )}
+                    </div>
+
+                    {appointment.treatment && (
+                      <div className="muted">
+                        Treatment: {appointment.treatment}
+                      </div>
+                    )}
+                  </div>
+                )
+              )}
+
+              {upcomingDashboardAppointments.length === 0 && (
                 <p className="muted">
-                  No upcoming
-                  appointments.
+                  No upcoming visits.
                 </p>
               )}
             </div>
           </>
         )}
 
-        {/* ====================================================
+        {/* ================================================
             PATIENTS
-        ==================================================== */}
+        ================================================ */}
 
-        {page === "patients" && (
+{page === "patients" && (
+  <>
+    <div className="card">
+      <div className="actions">
+        <button onClick={() => newPatient()}>
+          + New patient
+        </button>
+
+        <input
+          placeholder="Search name / phone / patient ID"
+          value={patientSearch}
+          onChange={(e) =>
+            setPatientSearch(e.target.value)
+          }
+          style={{
+            flex: 1,
+            minWidth: 220,
+          }}
+        />
+      </div>
+    </div>
+
+    <div className="card scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Patient ID</th>
+            <th>Patient</th>
+            <th>Contact</th>
+            <th>Last visit</th>
+            <th>Clinical</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {filteredPatients.map((patient) => (
+            <tr key={patient.id}>
+              <td>
+                <b>{patient.patientNumber}</b>
+              </td>
+
+              <td>
+                <b>{fullName(patient)}</b>
+
+                <br />
+
+                <span className="muted">
+                  {patient.gender || "—"}
+
+                  {patient.age != null
+                    ? ` • ${patient.age} yrs`
+                    : ""}
+                </span>
+
+                <br />
+
+              </td>
+
+              <td>
+                {patient.phone}
+
+               
+
+                {patient.email && (
+                  <>
+                    <br />
+                    <span className="muted">
+                      {patient.email}
+                    </span>
+                  </>
+                )}
+              </td>
+
+              <td>
+                {formatDate(
+                  lastVisitDate(patient.id)
+                )}
+              </td>
+
+              <td>
+                {patient.diagnosis ? (
+                  <>
+                    <b>{patient.diagnosis}</b>
+
+                    {patient.followUpDate && (
+                      <>
+                        <br />
+                        <span className="muted">
+                          Follow-up:{" "}
+                          {formatDate(
+                            patient.followUpDate
+                          )}
+                        </span>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <span className="muted">
+                    No clinical entry
+                  </span>
+                )}
+              </td>
+
+              <td>
+                <button
+                  onClick={() => newPatient(patient)}
+                >
+                  Edit
+                </button>
+
+                <button
+                  onClick={() => newAppointment()}
+                >
+                  Appointment
+                </button>
+
+                <button
+                  className="danger"
+                  onClick={async () => {
+                    if (
+                      !confirm(
+                        "Delete this patient?"
+                      )
+                    ) {
+                      return;
+                    }
+
+                    const result =
+                      await deletePatient(
+                        patient.id
+                      );
+
+                    if (!result.success) {
+                      alert(
+                        result.error ||
+                          "Unable to delete patient"
+                      );
+                      return;
+                    }
+
+                    window.location.reload();
+                  }}
+                >
+                  Delete
+                </button>
+              </td>
+            </tr>
+          ))}
+
+          {filteredPatients.length === 0 && (
+            <tr>
+              <td
+                colSpan={6}
+                className="muted"
+              >
+                No patients
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  </>
+)}
+
+        {/* ================================================
+            APPOINTMENTS
+        ================================================ */}
+
+        {page === "appointments" && (
           <>
             <div className="card">
               <div className="actions">
-                <button
-                  onClick={() =>
-                    newPatient()
-                  }
-                >
-                  + New patient
+                <button onClick={() => newAppointment()}>
+                  + New appointment
                 </button>
 
-                <input
-                  placeholder="Search name / phone / patient ID"
-                  value={
-                    patientSearch
-                  }
+                <select
+                  value={appointmentFilter}
                   onChange={(e) =>
-                    setPatientSearch(
-                      e.target.value
-                    )
+                    setAppointmentFilter(e.target.value)
                   }
-                  style={{
-                    flex: 1,
-                    minWidth: 220,
-                  }}
-                />
+                >
+                  <option value="all">All</option>
+                  <option value="today">Today</option>
+                  <option value="upcoming">Upcoming</option>
+                  <option value="completed">Completed</option>
+                </select>
               </div>
             </div>
 
@@ -2087,138 +2191,94 @@ Paracetamol 500mg — SOS`}
               <table>
                 <thead>
                   <tr>
-                    <th>ID</th>
-
-                    <th>
-                      Patient
-                    </th>
-
-                    <th>
-                      Contact
-                    </th>
-
-                    <th>
-                      Last visit
-                    </th>
-
-                    <th>
-                      Actions
-                    </th>
+                    <th>Visit date/time</th>
+                    <th>Patient</th>
+                    <th>Reason</th>
+                    <th>Status</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
 
                 <tbody>
-                  {filteredPatients.map(
-                    (patient) => (
-                      <tr
-                        key={
-                          patient.id
-                        }
-                      >
-                        <td>
-                          {
-                            patient.patientNumber
+                  {filteredAppointments.map((appointment) => (
+                    <tr key={appointment.id}>
+                      <td>
+                        <span className="visit-date">
+                          {formatDate(appointment.date)}
+                        </span>
+
+                        {appointment.time && (
+                          <div className="muted">
+                            {appointment.time}
+                          </div>
+                        )}
+                      </td>
+
+                      <td>
+                        {patientName(appointment.patientId)}
+                      </td>
+
+                      <td>{appointment.reason}</td>
+
+                      <td>
+                        <span
+                          className={`badge ${
+                            appointment.status === "COMPLETED"
+                              ? "ok"
+                              : appointment.status === "CANCELLED"
+                              ? "warn"
+                              : ""
+                          }`}
+                        >
+                          {appointment.status}
+                        </span>
+                      </td>
+
+                      <td>
+                        <button
+                          onClick={() =>
+                            newAppointment(appointment)
                           }
-                        </td>
+                        >
+                          Edit
+                        </button>
 
-                        <td>
-                          <b>
-                            {fullName(
-                              patient
-                            )}
-                          </b>
-
-                          <br />
-
-                          <span className="muted">
-  {patient.gender || "—"}{" "}
-  {patient.age != null ? `${patient.age} yrs` : ""}
-</span>
-                        </td>
-
-                        <td>
-                          {
-                            patient.phone
-                          }
-
-                          <br />
-
-                          {
-                            patient.email
-                          }
-                        </td>
-
-                        <td>
-                          {formatDate(
-                            clinical.find(
-                              (c) =>
-                                c.patientId ===
-                                patient.id
-                            )?.date
-                          )}
-                        </td>
-
-                        <td>
-                          <button
-                            onClick={() =>
-                              newPatient(
-                                patient
+                        <button
+                          className="danger"
+                          onClick={async () => {
+                            if (
+                              !confirm(
+                                "Delete appointment?"
                               )
-                            }
-                          >
-                            Edit
-                          </button>
+                            )
+                              return;
 
-                          <button
-                            onClick={() =>
+                            const result =
+                              await deleteAppointment(
+                                appointment.id
+                              );
+
+                            if (!result.success) {
                               alert(
-                                "Patient chart is available from the patient records."
-                              )
+                                result.error ||
+                                  "Unable to delete appointment"
+                              );
+                              return;
                             }
-                          >
-                            Chart
-                          </button>
 
-                          <button
-                            className="danger"
-                            onClick={async () => {
-                              if (
-                                !confirm(
-                                  "Delete this patient?"
-                                )
-                              )
-                                return;
+                            window.location.reload();
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
 
-                              const fd =
-                                new FormData();
-
-                              fd.set(
-                                "id",
-                                patient.id
-                              );
-
-                              await deletePatient(
-                                fd
-                              );
-
-                              window.location.reload();
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    )
-                  )}
-
-                  {filteredPatients.length ===
-                    0 && (
+                  {filteredAppointments.length === 0 && (
                     <tr>
-                      <td
-                        colSpan={5}
-                        className="muted"
-                      >
-                        No patients
+                      <td colSpan={5} className="muted">
+                        No appointments found.
                       </td>
                     </tr>
                   )}
@@ -2228,313 +2288,15 @@ Paracetamol 500mg — SOS`}
           </>
         )}
 
-        {/* ====================================================
-            APPOINTMENTS
-        ==================================================== */}
-
-        {page ===
-          "appointments" && (
-          <>
-            <div className="card">
-              <div className="actions">
-                <button
-                  onClick={() =>
-                    newAppointment()
-                  }
-                >
-                  + New appointment
-                </button>
-
-                <select
-                  value={
-                    appointmentFilter
-                  }
-                  onChange={(e) =>
-                    setAppointmentFilter(
-                      e.target.value
-                    )
-                  }
-                >
-                  <option value="all">
-                    All
-                  </option>
-
-                  <option value="today">
-                    Today
-                  </option>
-
-                  <option value="upcoming">
-                    Upcoming
-                  </option>
-
-                  <option value="completed">
-                    Completed
-                  </option>
-                </select>
-              </div>
-            </div>
-
-            <div className="card scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>
-                      Date/time
-                    </th>
-
-                    <th>
-                      Patient
-                    </th>
-
-                    <th>
-                      Reason
-                    </th>
-
-                    <th>
-                      Status
-                    </th>
-
-                    <th>
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {filteredAppointments.map(
-                    (appointment) => (
-                      <tr
-                        key={
-                          appointment.id
-                        }
-                      >
-                        <td>
-                          {formatDateTime(
-                            appointment.date,
-                            appointment.time
-                          )}
-                        </td>
-
-                        <td>
-                          {patientName(
-                            appointment.patientId
-                          )}
-                        </td>
-
-                        <td>
-                          {
-                            appointment.reason
-                          }
-                        </td>
-
-                        <td>
-                          <span
-                            className={`badge ${
-                              appointment.status ===
-                              "COMPLETED"
-                                ? "ok"
-                                : appointment.status ===
-                                  "CANCELLED"
-                                ? "warn"
-                                : ""
-                            }`}
-                          >
-                            {
-                              appointment.status
-                            }
-                          </span>
-                        </td>
-
-                        <td>
-                          <button
-                            onClick={() =>
-                              newAppointment(
-                                appointment
-                              )
-                            }
-                          >
-                            Edit
-                          </button>
-
-                          <button
-                            className="danger"
-                            onClick={async () => {
-                              if (
-                                !confirm(
-                                  "Delete appointment?"
-                                )
-                              )
-                                return;
-
-                              const fd =
-                                new FormData();
-
-                              fd.set(
-                                "id",
-                                appointment.id
-                              );
-
-                              await deleteAppointment(
-                                fd
-                              );
-
-                              window.location.reload();
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    )
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-
-        {/* ====================================================
-            CLINICAL
-        ==================================================== */}
-
-        {page === "clinical" && (
-          <>
-            <div className="card">
-              <div className="actions">
-                <button
-                  onClick={() =>
-                    newClinical()
-                  }
-                >
-                  + Clinical entry
-                </button>
-
-                <input
-                  placeholder="Search patient"
-                  value={
-                    clinicalSearch
-                  }
-                  onChange={(e) =>
-                    setClinicalSearch(
-                      e.target.value
-                    )
-                  }
-                  style={{
-                    flex: 1,
-                    minWidth: 220,
-                  }}
-                />
-              </div>
-            </div>
-
-            <div className="card scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-
-                    <th>
-                      Patient
-                    </th>
-
-                    <th>
-                      Tooth
-                    </th>
-
-                    <th>
-                      Procedure /
-                      diagnosis
-                    </th>
-
-                    <th>
-                      Notes
-                    </th>
-
-                    <th>
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {filteredClinical.map(
-                    (record) => (
-                      <tr
-                        key={
-                          record.id
-                        }
-                      >
-                        <td>
-                          {formatDate(
-                            record.date
-                          )}
-                        </td>
-
-                        <td>
-                          {patientName(
-                            record.patientId
-                          )}
-                        </td>
-
-                        <td>
-                          —
-                        </td>
-
-                        <td>
-                          {
-                            record
-                              .treatmentRecords?.[0]
-                              ?.treatmentName
-                          }
-
-                          <br />
-
-                          <span className="muted">
-                            {
-                              record.diagnosis
-                            }
-                          </span>
-                        </td>
-
-                        <td>
-                          {
-                            record.clinicalNotes
-                          }
-                        </td>
-
-                        <td>
-                          <button
-                            onClick={() =>
-                              newClinical(
-                                record
-                              )
-                            }
-                          >
-                            Edit
-                          </button>
-                        </td>
-                      </tr>
-                    )
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-
-        {/* ====================================================
+        {/* ================================================
             BILLING
-        ==================================================== */}
+        ================================================ */}
 
         {page === "billing" && (
           <>
             <div className="card">
               <div className="actions">
-                <button
-                  onClick={() =>
-                    newBill()
-                  }
-                >
+                <button onClick={() => newBill()}>
                   + New bill
                 </button>
 
@@ -2542,14 +2304,9 @@ Paracetamol 500mg — SOS`}
                   placeholder="Search patient"
                   value={billSearch}
                   onChange={(e) =>
-                    setBillSearch(
-                      e.target.value
-                    )
+                    setBillSearch(e.target.value)
                   }
-                  style={{
-                    flex: 1,
-                    minWidth: 220,
-                  }}
+                  style={{ flex: 1, minWidth: 220 }}
                 />
               </div>
             </div>
@@ -2559,164 +2316,95 @@ Paracetamol 500mg — SOS`}
                 <thead>
                   <tr>
                     <th>Date</th>
-
-                    <th>
-                      Bill #
-                    </th>
-
-                    <th>
-                      Patient
-                    </th>
-
-                    <th>
-                      Items
-                    </th>
-
-                    <th>
-                      Total
-                    </th>
-
-                    <th>
-                      Paid
-                    </th>
-
-                    <th>
-                      Balance
-                    </th>
-
-                    <th>
-                      Actions
-                    </th>
+                    <th>Bill #</th>
+                    <th>Patient</th>
+                    <th>Items</th>
+                    <th>Total</th>
+                    <th>Paid</th>
+                    <th>Balance</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
 
                 <tbody>
-                  {filteredInvoices.map(
-                    (invoice) => {
-                      const paid =
-                        invoice.payments.reduce(
-                          (
-                            sum,
-                            payment
-                          ) =>
-                            sum +
-                            Number(
-                              payment.amount
-                            ),
-                          0
-                        );
+                  {filteredInvoices.map((invoice) => {
+                    const paid = invoice.payments.reduce(
+                      (sum, payment) =>
+                        sum + Number(payment.amount),
+                      0
+                    );
 
-                      return (
-                        <tr
-                          key={
-                            invoice.id
-                          }
-                        >
-                          <td>
-                            {formatDate(
-                              invoice.invoiceDate
-                            )}
-                          </td>
+                    return (
+                      <tr key={invoice.id}>
+                        <td>
+                          {formatDate(invoice.invoiceDate)}
+                        </td>
 
-                          <td>
-                            {
-                              invoice.invoiceNumber
-                            }
-                          </td>
+                        <td>{invoice.invoiceNumber}</td>
 
-                          <td>
-                            {patientName(
-                              invoice.patientId
-                            )}
-                          </td>
+                        <td>
+                          {patientName(invoice.patientId)}
+                        </td>
 
-                          <td>
-                            {invoice.items.map(
-                              (
-                                item
-                              ) => (
-                                <div
-                                  key={
-                                    item.description
-                                  }
-                                >
-                                  {
-                                    item.description
-                                  }{" "}
-                                  —{" "}
-                                  {money(
-                                    item.amount
-                                  )}
-                                </div>
-                              )
-                            )}
-                          </td>
+                        <td>
+                          {invoice.items.map((item) => (
+                            <div key={item.description}>
+                              {item.description} —{" "}
+                              {money(item.amount)}
+                            </div>
+                          ))}
+                        </td>
 
-                          <td>
-                            {money(
-                              invoice.total
-                            )}
-                          </td>
+                        <td>{money(invoice.total)}</td>
 
-                          <td>
-                            {money(
-                              paid
-                            )}
-                          </td>
+                        <td>{money(paid)}</td>
 
-                          <td>
-                            {money(
-                              Number(
-                                invoice.total
-                              ) -
-                                paid
-                            )}
-                          </td>
+                        <td>
+                          {money(
+                            Number(invoice.total) - paid
+                          )}
+                        </td>
 
-                          <td>
-                            <button
-                              onClick={() => {
-                                const fd =
-                                  new FormData();
+                        <td>
+                          <button
+                            onClick={async () => {
+                              const amount = prompt(
+                                "Payment amount"
+                              );
 
-                                fd.set(
-                                  "invoiceId",
-                                  invoice.id
+                              if (!amount) return;
+
+                              const result =
+                                await addPayment({
+                                  invoiceId: invoice.id,
+                                  amount,
+                                  method: "CASH",
+                                });
+
+                              if (!result.success) {
+                                alert(
+                                  result.error ||
+                                    "Unable to add payment"
                                 );
+                                return;
+                              }
 
-                                const amount =
-                                  prompt(
-                                    "Payment amount"
-                                  );
+                              window.location.reload();
+                            }}
+                          >
+                            Payment
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
 
-                                if (
-                                  amount
-                                ) {
-                                  fd.set(
-                                    "amount",
-                                    amount
-                                  );
-
-                                  fd.set(
-                                    "method",
-                                    "CASH"
-                                  );
-
-                                  addPayment(
-                                    fd
-                                  ).then(
-                                    () =>
-                                      window.location.reload()
-                                  );
-                                }
-                              }}
-                            >
-                              Payment
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    }
+                  {filteredInvoices.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="muted">
+                        No bills found.
+                      </td>
+                    </tr>
                   )}
                 </tbody>
               </table>
@@ -2724,20 +2412,15 @@ Paracetamol 500mg — SOS`}
           </>
         )}
 
-        {/* ====================================================
+        {/* ================================================
             PRESCRIPTIONS
-        ==================================================== */}
+        ================================================ */}
 
-        {page ===
-          "prescriptions" && (
+        {page === "prescriptions" && (
           <>
             <div className="card">
               <div className="actions">
-                <button
-                  onClick={() =>
-                    newPrescription()
-                  }
-                >
+                <button onClick={() => newPrescription()}>
                   + Prescription
                 </button>
 
@@ -2745,14 +2428,9 @@ Paracetamol 500mg — SOS`}
                   placeholder="Search patient"
                   value={rxSearch}
                   onChange={(e) =>
-                    setRxSearch(
-                      e.target.value
-                    )
+                    setRxSearch(e.target.value)
                   }
-                  style={{
-                    flex: 1,
-                    minWidth: 220,
-                  }}
+                  style={{ flex: 1, minWidth: 220 }}
                 />
               </div>
             </div>
@@ -2762,81 +2440,53 @@ Paracetamol 500mg — SOS`}
                 <thead>
                   <tr>
                     <th>Date</th>
-
-                    <th>
-                      Patient
-                    </th>
-
-                    <th>
-                      Medicines /
-                      instructions
-                    </th>
-
-                    <th>
-                      Actions
-                    </th>
+                    <th>Patient</th>
+                    <th>Medicines / instructions</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
 
                 <tbody>
-                  {filteredRx.map(
-                    (rx) => (
-                      <tr
-                        key={
-                          rx.id
-                        }
-                      >
-                        <td>
-                          {formatDate(
-                            rx.prescriptionDate
-                          )}
-                        </td>
+                  {filteredRx.map((rx) => (
+                    <tr key={rx.id}>
+                      <td>
+                        {formatDate(rx.prescriptionDate)}
+                      </td>
 
-                        <td>
-                          {patientName(
-                            rx.patientId
-                          )}
-                        </td>
+                      <td>{patientName(rx.patientId)}</td>
 
-                        <td>
-                          {rx.items.map(
-                            (
-                              item
-                            ) => (
-                              <div
-                                key={
-                                  item.medicine
-                                }
-                              >
-                                {
-                                  item.medicine
-                                }
+                      <td>
+                        {rx.items.map((item) => (
+                          <div key={item.medicine}>
+                            {item.medicine}
+                            <br />
+                            <span className="muted">
+                              {item.instructions}
+                            </span>
+                          </div>
+                        ))}
+                      </td>
 
-                                <br />
-
-                                <span className="muted">
-                                  {
-                                    item.instructions
-                                  }
-                                </span>
-                              </div>
+                      <td>
+                        <button
+                          onClick={() =>
+                            alert(
+                              "Prescription editing can be added next."
                             )
-                          )}
-                        </td>
+                          }
+                        >
+                          Edit
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
 
-                        <td>
-                          <button
-                            onClick={() =>
-                              alert(
-                                "Prescription editing can be added next."
-                              )
-                            }
-                          >
-                            Edit
-                          </button>
-                        </td>
-                      </tr>
-                    )
+                  {filteredRx.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="muted">
+                        No prescriptions found.
+                      </td>
+                    </tr>
                   )}
                 </tbody>
               </table>
@@ -2844,41 +2494,28 @@ Paracetamol 500mg — SOS`}
           </>
         )}
 
-        {/* ====================================================
+        {/* ================================================
             FILES
-        ==================================================== */}
+        ================================================ */}
 
         {page === "files" && (
           <>
             <div className="card">
-              <h2>
-                Patient documents
-              </h2>
+              <h2>Patient documents</h2>
 
               <p className="muted">
-                Attach X-rays,
-                photographs, scans,
-                consent forms and
-                reports to a patient.
-                Maximum 5 MB per
-                image.
+                Attach X-rays, photographs, scans, reports
+                and other patient documents. Maximum 5 MB
+                per image.
               </p>
 
               <form
-                action={async (
-                  formData
-                ) => {
+                action={async (formData) => {
                   try {
-                    const file =
-                      formData.get(
-                        "file"
-                      );
+                    const file = formData.get("file");
 
                     if (
-                      !(
-                        file instanceof
-                        File
-                      ) ||
+                      !(file instanceof File) ||
                       file.size === 0
                     ) {
                       throw new Error(
@@ -2886,89 +2523,43 @@ Paracetamol 500mg — SOS`}
                       );
                     }
 
-                    setUploadingFile(
-                      true
+                    setUploadingFile(true);
+
+                    const url = await uploadImage(
+                      file,
+                      "dental/attachments"
                     );
 
-                    /*
-                     * 1. Upload image to S3
-                     *    through /api/upload
-                     */
-                    const url =
-                      await uploadImage(
-                        file,
-                        "dental/attachments"
-                      );
-
-                    /*
-                     * 2. Create database
-                     *    Attachment record
-                     */
-                    const attachmentData =
-                      new FormData();
-
-                    attachmentData.set(
-                      "patientId",
-                      String(
-                        formData.get(
-                          "patientId"
-                        ) || ""
-                      )
+                    const patientId = String(
+                      formData.get("patientId") || ""
                     );
 
-                    attachmentData.set(
-                      "name",
-                      file.name
-                    );
+                    const result = await saveAttachment({
+                      patientId,
+                      name: file.name,
+                      mimeType: file.type,
+                      size: file.size,
+                      url,
+                    });
 
-                    attachmentData.set(
-                      "mimeType",
-                      file.type
-                    );
-
-                    attachmentData.set(
-                      "size",
-                      String(
-                        file.size
-                      )
-                    );
-
-                    attachmentData.set(
-                      "url",
-                      url
-                    );
-
-                    const {
-                      saveAttachment,
-                    } =
-                      await import(
-                        "./actions"
-                      );
-
-                    await saveAttachment(
-                      attachmentData
-                    );
+                    if (!result.success) {
+                      throw new Error(result.error);
+                    }
 
                     window.location.reload();
                   } catch (error) {
                     alert(
-                      error instanceof
-                        Error
+                      error instanceof Error
                         ? error.message
                         : "Unable to upload file"
                     );
                   } finally {
-                    setUploadingFile(
-                      false
-                    );
+                    setUploadingFile(false);
                   }
                 }}
               >
                 <div className="actions">
-                  <select
-                    name="patientId"
-                    required
-                  >
+                  <select name="patientId" required>
                     {patientOptions()}
                   </select>
 
@@ -2982,9 +2573,7 @@ Paracetamol 500mg — SOS`}
 
                   <button
                     type="submit"
-                    disabled={
-                      uploadingFile
-                    }
+                    disabled={uploadingFile}
                   >
                     {uploadingFile
                       ? "Uploading..."
@@ -2994,8 +2583,7 @@ Paracetamol 500mg — SOS`}
 
                 {uploadingFile && (
                   <p className="muted">
-                    Uploading image to
-                    secure storage...
+                    Uploading image to secure storage...
                   </p>
                 )}
               </form>
@@ -3005,123 +2593,80 @@ Paracetamol 500mg — SOS`}
               <table>
                 <thead>
                   <tr>
-                    <th>
-                      Patient
-                    </th>
-
-                    <th>
-                      File
-                    </th>
-
-                    <th>
-                      Added
-                    </th>
-
-                    <th>
-                      Action
-                    </th>
+                    <th>Patient</th>
+                    <th>File</th>
+                    <th>Added</th>
+                    <th>Action</th>
                   </tr>
                 </thead>
 
                 <tbody>
-                  {attachments.map(
-                    (file) => (
-                      <tr
-                        key={
-                          file.id
-                        }
-                      >
-                        <td>
-                          {patientName(
-                            file.patientId
-                          )}
-                        </td>
+                  {attachments.map((file) => (
+                    <tr key={file.id}>
+                      <td>{patientName(file.patientId)}</td>
 
-                        <td>
-                          <div>
-                            {
-                              file.name
-                            }
-                          </div>
+                      <td>
+                        <div>{file.name}</div>
+                        <span className="muted">
+                          {file.mimeType} •{" "}
+                          {(
+                            file.size /
+                            1024 /
+                            1024
+                          ).toFixed(2)}{" "}
+                          MB
+                        </span>
+                      </td>
 
-                          <span className="muted">
-                            {
-                              file.mimeType
-                            }{" "}
-                            •{" "}
-                            {(
-                              file.size /
-                              1024 /
-                              1024
-                            ).toFixed(
-                              2
-                            )}{" "}
-                            MB
-                          </span>
-                        </td>
+                      <td>{formatDate(file.createdAt)}</td>
 
-                        <td>
-                          {formatDate(
-                            file.createdAt
-                          )}
-                        </td>
+                      <td>
+                        {file.url && (
+                          <a
+                            href={file.url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <button type="button">
+                              Open
+                            </button>
+                          </a>
+                        )}
 
-                        <td>
-                          {file.url && (
-                            <a
-                              href={
-                                file.url
-                              }
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              <button type="button">
-                                Open
-                              </button>
-                            </a>
-                          )}
+                        <button
+                          className="danger"
+                          onClick={async () => {
+                            if (
+                              !confirm("Delete file?")
+                            )
+                              return;
 
-                          <button
-                            className="danger"
-                            onClick={async () => {
-                              if (
-                                !confirm(
-                                  "Delete file?"
-                                )
-                              )
-                                return;
-
-                              const fd =
-                                new FormData();
-
-                              fd.set(
-                                "id",
+                            const result =
+                              await deleteAttachment(
                                 file.id
                               );
 
-                              await deleteAttachment(
-                                fd
+                            if (!result.success) {
+                              alert(
+                                result.error ||
+                                  "Unable to delete file"
                               );
+                              return;
+                            }
 
-                              window.location.reload();
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    )
-                  )}
+                            window.location.reload();
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
 
-                  {attachments.length ===
-                    0 && (
+                  {attachments.length === 0 && (
                     <tr>
-                      <td
-                        colSpan={4}
-                        className="muted"
-                      >
-                        No files uploaded
-                        yet.
+                      <td colSpan={4} className="muted">
+                        No files uploaded yet.
                       </td>
                     </tr>
                   )}
@@ -3131,37 +2676,27 @@ Paracetamol 500mg — SOS`}
           </>
         )}
 
-        {/* ====================================================
+        {/* ================================================
             REPORTS
-        ==================================================== */}
+        ================================================ */}
 
         {page === "reports" && (
           <>
             <div className="card">
-              <h2>
-                Clinic reports
-              </h2>
+              <h2>Clinic reports</h2>
 
               <div className="statgrid">
                 <div className="stat">
                   Total patients
-
-                  <b>
-                    {
-                      patients.length
-                    }
-                  </b>
+                  <b>{patients.length}</b>
                 </div>
 
                 <div className="stat">
                   Completed visits
-
                   <b>
                     {
                       appointments.filter(
-                        (a) =>
-                          a.status ===
-                          "COMPLETED"
+                        (a) => a.status === "COMPLETED"
                       ).length
                     }
                   </b>
@@ -3169,18 +2704,11 @@ Paracetamol 500mg — SOS`}
 
                 <div className="stat">
                   Total billed
-
                   <b>
                     {money(
                       invoices.reduce(
-                        (
-                          sum,
-                          invoice
-                        ) =>
-                          sum +
-                          Number(
-                            invoice.total
-                          ),
+                        (sum, invoice) =>
+                          sum + Number(invoice.total),
                         0
                       )
                     )}
@@ -3189,24 +2717,14 @@ Paracetamol 500mg — SOS`}
 
                 <div className="stat">
                   Total collected
-
                   <b>
                     {money(
                       invoices.reduce(
-                        (
-                          sum,
-                          invoice
-                        ) =>
+                        (sum, invoice) =>
                           sum +
                           invoice.payments.reduce(
-                            (
-                              pSum,
-                              payment
-                            ) =>
-                              pSum +
-                              Number(
-                                payment.amount
-                              ),
+                            (pSum, payment) =>
+                              pSum + Number(payment.amount),
                             0
                           ),
                         0
@@ -3217,89 +2735,60 @@ Paracetamol 500mg — SOS`}
 
                 <div className="stat">
                   Outstanding
-
-                  <b>
-                    {money(
-                      pendingPayments
-                    )}
-                  </b>
+                  <b>{money(pendingPayments)}</b>
                 </div>
               </div>
             </div>
 
             <div className="card">
-              <h3>
-                Procedure summary
-              </h3>
+              <h3>Patient treatment plans</h3>
 
               {(() => {
-                const procedureMap: Record<
-                  string,
-                  number
-                > = {};
+                const treatmentMap: Record<string, number> = {};
 
-                clinical.forEach(
-                  (record) => {
-                    const procedure =
-                      record
-                        .treatmentRecords?.[0]
-                        ?.treatmentName ||
-                      "Unspecified";
+                patients.forEach((patient) => {
+                  const plan = patient.treatmentPlan?.trim();
 
-                    procedureMap[
-                      procedure
-                    ] =
-                      (procedureMap[
-                        procedure
-                      ] || 0) + 1;
-                  }
-                );
+                  if (!plan) return;
 
-                return Object.entries(
-                  procedureMap
-                )
-                  .sort(
-                    (a, b) =>
-                      b[1] - a[1]
-                  )
-                  .map(
-                    ([
-                      name,
-                      count,
-                    ]) => (
-                      <div
-                        className="card"
-                        key={name}
-                      >
-                        <b>
-                          {name}
-                        </b>{" "}
-                        — {count}
-                      </div>
-                    )
+                  treatmentMap[plan] =
+                    (treatmentMap[plan] || 0) + 1;
+                });
+
+                const entries = Object.entries(
+                  treatmentMap
+                ).sort((a, b) => b[1] - a[1]);
+
+                if (entries.length === 0) {
+                  return (
+                    <p className="muted">
+                      No treatment plans recorded.
+                    </p>
                   );
+                }
+
+                return entries.map(([name, count]) => (
+                  <div className="card" key={name}>
+                    <b>{name}</b> — {count}
+                  </div>
+                ));
               })()}
             </div>
           </>
         )}
 
-        {/* ====================================================
+        {/* ================================================
             BACKUP
-        ==================================================== */}
+        ================================================ */}
 
         {page === "backup" && (
           <>
             <div className="card">
-              <h2>
-                Backup & restore
-              </h2>
+              <h2>Backup & restore</h2>
 
               <p>
-                Export the clinic
-                data from the
-                database. This
-                version exports
-                the currently loaded
+                Export the clinic data from the database.
+                This version exports the currently loaded
                 records as JSON.
               </p>
 
@@ -3312,92 +2801,68 @@ Paracetamol 500mg — SOS`}
                     doctors,
                     treatments,
                     testimonials,
-                    clinical,
                     invoices,
                     prescriptions,
                     attachments,
                   };
 
-                  const blob =
-                    new Blob(
-                      [
-                        JSON.stringify(
-                          data,
-                          null,
-                          2
-                        ),
-                      ],
-                      {
-                        type: "application/json",
-                      }
-                    );
+                  const blob = new Blob(
+                    [JSON.stringify(data, null, 2)],
+                    { type: "application/json" }
+                  );
 
-                  const url =
-                    URL.createObjectURL(
-                      blob
-                    );
+                  const url = URL.createObjectURL(blob);
 
-                  const a =
-                    document.createElement(
-                      "a"
-                    );
+                  const a = document.createElement("a");
 
                   a.href = url;
-
                   a.download = `jaswith-dental-care-backup-${today()}.json`;
-
                   a.click();
 
-                  URL.revokeObjectURL(
-                    url
-                  );
+                  URL.revokeObjectURL(url);
                 }}
               >
                 Download backup
               </button>
             </div>
 
-        
-
             <div className="card">
-              <h3>
-                Privacy notice
-              </h3>
+              <h3>Privacy notice</h3>
 
               <p className="muted">
-                Patient information
-                is sensitive clinical
-                data. Use authenticated
-                accounts, encrypted
-                storage, backups,
-                role-based access,
-                audit logging and
-                secure hosting before
-                production deployment.
+                Patient information is sensitive clinical
+                data. Use authenticated accounts, encrypted
+                storage, backups, role-based access, audit
+                logging and secure hosting before production
+                deployment.
               </p>
             </div>
           </>
         )}
 
-        {
-          page === "settings" && (
-            <Setting  clinic={clinic} doctors={doctors} testimonials={testimonials} treatments={treatments} />
-          )
-        }
+        {/* ================================================
+            SETTINGS
+        ================================================ */}
+
+        {page === "settings" && (
+          <Setting
+            clinic={clinic}
+            doctors={doctors}
+            testimonials={testimonials}
+            treatments={treatments}
+          />
+        )}
       </main>
 
-      {/* ======================================================
+      {/* ==================================================
           MODAL
-      ====================================================== */}
+      ================================================== */}
 
       {modal && (
         <div
           className="modal"
           onMouseDown={(event) => {
-            if (
-              event.target ===
-              event.currentTarget
-            ) {
+            if (event.target === event.currentTarget) {
               closeModal();
             }
           }}
@@ -3405,21 +2870,15 @@ Paracetamol 500mg — SOS`}
           <div className="modalbox">
             <div
               className="actions"
-              style={{
-                justifyContent:
-                  "space-between",
-              }}
+              style={{ justifyContent: "space-between" }}
             >
-              <h2>
-                {modal.title}
-              </h2>
+              <h2>{modal.title}</h2>
 
               <button
+                type="button"
                 className="secondary"
-                onClick={
-                  closeModal
-                }
-              > 
+                onClick={closeModal}
+              >
                 Close
               </button>
             </div>
