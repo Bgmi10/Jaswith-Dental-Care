@@ -14,16 +14,6 @@ import { revalidatePath } from "next/cache";
    TYPES
 ============================================================ */
 
-type ActionResult<T = unknown> =
-  | {
-      success: true;
-      [key: string]: any;
-    }
-  | {
-      success: false;
-      error: string;
-    };
-
 /* ============================================================
    HELPERS
 ============================================================ */
