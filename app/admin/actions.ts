@@ -1,23 +1,14 @@
 "use server";
 
+import prisma from "@/prisma";
+import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
-import { Prisma, PrismaClient } from "@prisma/client";
 
 /* ============================================================
    PRISMA
 ============================================================ */
 
-const globalForPrisma = globalThis as unknown as {
-  prisma?: PrismaClient;
-};
 
-const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient();
-
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = prisma;
-}
 
 /* ============================================================
    TYPES
