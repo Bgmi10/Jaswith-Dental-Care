@@ -247,6 +247,8 @@ model Patient {
   attachments      Attachment[]
   invoices         Invoice[]
 
+  createdAt        DateTime    @default(now())
+
   // ----------------------------------------------------------
   // INDEXES
   // ----------------------------------------------------------

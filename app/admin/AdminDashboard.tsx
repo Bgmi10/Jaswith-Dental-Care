@@ -2394,6 +2394,55 @@ Paracetamol 500mg — SOS`}
                           >
                             Payment
                           </button>
+
+                          <button
+  onClick={async () => {
+    try {
+      const res = await fetch(
+        `/api/invoices/${invoice.id}/pdf`
+      );
+
+      if (!res.ok) {
+        throw new Error("Failed to generate PDF");
+      }
+
+      const blob = await res.blob();
+
+      const url = window.URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+
+      // Get filename from API response if provided
+      const disposition = res.headers.get(
+        "Content-Disposition"
+      );
+
+      const filename =
+        disposition?.match(
+          /filename="?([^"]+)"?/
+        )?.[1] ||
+        `invoice-${invoice.invoiceNumber}.pdf`;
+
+      a.download = filename;
+
+      document.body.appendChild(a);
+      a.click();
+
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error(
+        "PDF download failed:",
+        error
+      );
+
+      alert("Failed to download invoice PDF");
+    }
+  }}
+>
+  Download PDF
+</button>
                         </td>
                       </tr>
                     );
