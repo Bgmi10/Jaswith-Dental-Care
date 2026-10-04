@@ -5,12 +5,6 @@ import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 
 /* ============================================================
-   PRISMA
-============================================================ */
-
-
-
-/* ============================================================
    TYPES
 ============================================================ */
 
@@ -124,6 +118,231 @@ function decimalZero(value: unknown) {
 }
 
 /* ============================================================
+   PATIENT NUMBER SORTING
+============================================================ */
+
+/**
+ * Extract the numeric portion from a patient number.
+ *
+ * Examples:
+ *
+ * JASWITH-00001 -> 1
+ * JASWITH-00002 -> 2
+ * JASWITH-00010 -> 10
+ * JASWITH-00123 -> 123
+ * JASWITH-00132 -> 132
+ *
+ * The prefix is ignored when sorting.
+ */
+function getPatientNumberValue(
+  patientNumber: unknown
+): number {
+  if (
+    patientNumber === undefined ||
+    patientNumber === null
+  ) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const value =
+    String(patientNumber).trim();
+
+  const match =
+    value.match(/(\d+)$/);
+
+  if (!match) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const number =
+    Number(match[1]);
+
+  if (
+    !Number.isSafeInteger(number)
+  ) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return number;
+}
+
+/**
+ * Sort patients by the numeric suffix of patientNumber.
+ *
+ * Example:
+ *
+ * Input:
+ *
+ * JASWITH-00010
+ * JASWITH-00002
+ * JASWITH-00132
+ * JASWITH-00001
+ * JASWITH-00123
+ *
+ * Output:
+ *
+ * JASWITH-00001
+ * JASWITH-00002
+ * JASWITH-00010
+ * JASWITH-00123
+ * JASWITH-00132
+ */
+function sortPatientsByNumber<
+  T extends {
+    patientNumber?: string | null;
+  }
+>(
+  patients: T[],
+  direction: "asc" | "desc" = "asc"
+): T[] {
+  return [...patients].sort(
+    (a, b) => {
+      const aNumber =
+        getPatientNumberValue(
+          a.patientNumber
+        );
+
+      const bNumber =
+        getPatientNumberValue(
+          b.patientNumber
+        );
+
+      if (
+        aNumber === bNumber
+      ) {
+        const aValue =
+          a.patientNumber ?? "";
+
+        const bValue =
+          b.patientNumber ?? "";
+
+        return aValue.localeCompare(
+          bValue,
+          undefined,
+          {
+            numeric: true,
+            sensitivity: "base",
+          }
+        );
+      }
+
+      return direction === "asc"
+        ? aNumber - bNumber
+        : bNumber - aNumber;
+    }
+  );
+}
+
+/* ============================================================
+   PATIENT NUMBER GENERATION
+============================================================ */
+
+/**
+ * Generate the first available patient number.
+ *
+ * Examples:
+ *
+ * JASWITH-00001
+ * JASWITH-00002
+ * JASWITH-00003
+ *
+ * If JASWITH-00003 is deleted:
+ *
+ * next patient => JASWITH-00003
+ *
+ * If JASWITH-00001 is deleted:
+ *
+ * next patient => JASWITH-00001
+ *
+ * PostgreSQL advisory lock is used so that two simultaneous
+ * patient creations for the same clinic cannot generate
+ * the same patient number.
+ */
+async function generatePatientNumber(
+  clinicId: string
+): Promise<string> {
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw(
+        Prisma.sql`
+          SELECT pg_advisory_xact_lock(
+            hashtext(${clinicId})
+          )
+        `
+      );
+
+      const clinic =
+        await tx.clinic.findUnique({
+          where: {
+            id: clinicId,
+          },
+          select: {
+            patientPrefix: true,
+          },
+        });
+
+      if (!clinic) {
+        throw new Error(
+          "Clinic not found"
+        );
+      }
+
+      const prefix =
+        clinic.patientPrefix ||
+        "JASWITH";
+
+      const patients =
+        await tx.patient.findMany({
+          where: {
+            clinicId,
+          },
+          select: {
+            patientNumber: true,
+          },
+        });
+
+      const usedNumbers =
+        new Set<number>();
+
+      for (const patient of patients) {
+        const match =
+          patient.patientNumber.match(
+            /(\d+)$/
+          );
+
+        if (match) {
+          const number =
+            Number(match[1]);
+
+          if (
+            Number.isSafeInteger(
+              number
+            ) &&
+            number > 0
+          ) {
+            usedNumbers.add(
+              number
+            );
+          }
+        }
+      }
+
+      let nextNumber = 1;
+
+      while (
+        usedNumbers.has(nextNumber)
+      ) {
+        nextNumber++;
+      }
+
+      return `${prefix}-${String(
+        nextNumber
+      ).padStart(5, "0")}`;
+    }
+  );
+}
+
+/* ============================================================
    REVALIDATION
 ============================================================ */
 
@@ -133,7 +352,9 @@ function revalidatePatient(
   revalidatePath("/patients");
 
   if (patientId) {
-    revalidatePath(`/patients/${patientId}`);
+    revalidatePath(
+      `/patients/${patientId}`
+    );
   }
 
   revalidatePath("/dashboard");
@@ -154,43 +375,55 @@ function revalidateBilling() {
    DASHBOARD
 ============================================================ */
 
-/**
- * Main dashboard data.
- *
- * This is intended to be called directly by the dashboard
- * server component.
- */
 export async function getDashboardData(
   clinicId: string
 ) {
   try {
     if (!clinicId) {
-      throw new Error("Clinic ID is required");
+      throw new Error(
+        "Clinic ID is required"
+      );
     }
 
     const now = new Date();
 
-    const startOfToday = new Date(now);
-    startOfToday.setHours(0, 0, 0, 0);
+    const startOfToday =
+      new Date(now);
 
-    const endOfToday = new Date(now);
-    endOfToday.setHours(23, 59, 59, 999);
-
-    const startOfMonth = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      1
+    startOfToday.setHours(
+      0,
+      0,
+      0,
+      0
     );
 
-    const endOfMonth = new Date(
-      now.getFullYear(),
-      now.getMonth() + 1,
-      0,
+    const endOfToday =
+      new Date(now);
+
+    endOfToday.setHours(
       23,
       59,
       59,
       999
     );
+
+    const startOfMonth =
+      new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        1
+      );
+
+    const endOfMonth =
+      new Date(
+        now.getFullYear(),
+        now.getMonth() + 1,
+        0,
+        23,
+        59,
+        59,
+        999
+      );
 
     const [
       patientCount,
@@ -240,7 +473,10 @@ export async function getDashboardData(
         where: {
           clinicId,
           status: {
-            in: ["UNPAID", "PARTIAL"],
+            in: [
+              "UNPAID",
+              "PARTIAL",
+            ],
           },
         },
         _sum: {
@@ -285,10 +521,17 @@ export async function getDashboardData(
         where: {
           clinicId,
         },
+
+        /*
+         * Keep dashboard "recent patients"
+         * sorted by registration date.
+         */
         orderBy: {
           registeredAt: "desc",
         },
+
         take: 10,
+
         select: {
           id: true,
           patientNumber: true,
@@ -306,9 +549,13 @@ export async function getDashboardData(
             gte: startOfToday,
           },
           status: {
-            notIn: ["CANCELLED", "COMPLETED"],
+            notIn: [
+              "CANCELLED",
+              "COMPLETED",
+            ],
           },
         },
+
         orderBy: [
           {
             date: "asc",
@@ -317,7 +564,9 @@ export async function getDashboardData(
             time: "asc",
           },
         ],
+
         take: 10,
+
         include: {
           patient: {
             select: {
@@ -328,6 +577,7 @@ export async function getDashboardData(
               phone: true,
             },
           },
+
           doctor: {
             select: {
               id: true,
@@ -343,15 +593,19 @@ export async function getDashboardData(
             clinicId,
           },
         },
+
         orderBy: {
           paymentDate: "desc",
         },
+
         take: 10,
+
         include: {
           invoice: {
             select: {
               id: true,
               invoiceNumber: true,
+
               patient: {
                 select: {
                   id: true,
@@ -374,14 +628,18 @@ export async function getDashboardData(
         todayAppointments,
         pendingAppointments,
         completedTreatments,
+
         unpaidInvoices:
           unpaidInvoices._count.id,
+
         outstandingAmount:
           unpaidInvoices._sum.total ??
           new Prisma.Decimal(0),
+
         todayRevenue:
           todayPayments._sum.amount ??
           new Prisma.Decimal(0),
+
         monthRevenue:
           monthPayments._sum.amount ??
           new Prisma.Decimal(0),
@@ -420,6 +678,7 @@ export async function getDashboardAppointments(
         where: {
           clinicId,
         },
+
         orderBy: [
           {
             date: "asc",
@@ -428,7 +687,9 @@ export async function getDashboardAppointments(
             time: "asc",
           },
         ],
+
         take: 50,
+
         include: {
           patient: true,
           doctor: true,
@@ -458,55 +719,155 @@ export async function getDashboardAppointments(
 /* ============================================================
    PATIENT
 ============================================================ */
+
 /* ============================================================
-   PATIENT + CLINICAL ENTRY
+   PATIENT
 ============================================================ */
-/**
- * Get all patients for a clinic.
- */
-export async function getPatients(clinicId: string) {
+
+export async function getPatients(
+  clinicId: string
+) {
   try {
     if (!clinicId) {
-      throw new Error("Clinic ID is required");
+      throw new Error(
+        "Clinic ID is required"
+      );
     }
 
-    const patients = await prisma.patient.findMany({
-      where: {
-        clinicId,
-      },
-      orderBy: {
-        registeredAt: "desc",
-      },
-      include: {
-        medicalHistory: true,
-        dentalHistory: true,
-        appointments: {
-          orderBy: {
-            date: "desc",
-          },
-          take: 5,
+    const patients =
+      await prisma.patient.findMany({
+        where: {
+          clinicId,
         },
-        treatmentRecords: {
-          orderBy: {
-            createdAt: "desc",
-          },
-          take: 5,
+
+        /*
+         * We intentionally do not depend on Prisma's
+         * string ordering for patientNumber.
+         *
+         * The final array is sorted numerically below.
+         */
+        orderBy: {
+          registeredAt: "desc",
         },
-        invoices: {
-          orderBy: {
-            invoiceDate: "desc",
+
+        include: {
+          medicalHistory: true,
+
+          dentalHistory: true,
+
+          appointments: {
+            orderBy: {
+              date: "desc",
+            },
+            take: 5,
           },
-          take: 5,
+
+          treatmentRecords: {
+            orderBy: {
+              createdAt: "desc",
+            },
+            take: 5,
+          },
+
+          invoices: {
+            orderBy: {
+              invoiceDate: "desc",
+            },
+            take: 5,
+          },
         },
-      },
-    });
+      });
+
+    /*
+     * IMPORTANT:
+     *
+     * Always sort the COMPLETE patient array here.
+     *
+     * This changes:
+     *
+     * JDC-00002
+     * JDC-00003
+     * JDC-00001
+     *
+     * into:
+     *
+     * JDC-00001
+     * JDC-00002
+     * JDC-00003
+     */
+    const sortedPatients =
+      [...patients].sort(
+        (a, b) => {
+          const aNumber =
+            getPatientNumberValue(
+              a.patientNumber
+            );
+
+          const bNumber =
+            getPatientNumberValue(
+              b.patientNumber
+            );
+
+          /*
+           * Primary sort:
+           * numeric patient number.
+           */
+          if (
+            aNumber !== bNumber
+          ) {
+            return (
+              bNumber - aNumber
+            );
+          }
+
+          /*
+           * Secondary sort:
+           * patientNumber itself.
+           *
+           * This gives deterministic ordering
+           * if two records somehow have the
+           * same numeric suffix.
+           */
+          return (
+            String(
+              a.patientNumber ?? ""
+            ).localeCompare(
+              String(
+                b.patientNumber ?? ""
+              ),
+              undefined,
+              {
+                numeric: true,
+                sensitivity: "base",
+              }
+            )
+          );
+        }
+      );
 
     return {
       success: true,
-      patients,
+
+      /*
+       * THIS is the array the Patients page
+       * receives.
+       *
+       * It is guaranteed to be:
+       *
+       * JDC-00001
+       * JDC-00002
+       * JDC-00003
+       * JDC-00004
+       * ...
+       */
+      patients:
+        sortedPatients,
     };
   } catch (error) {
-    console.error("getPatients error:", error);
+    console.error(
+      "getPatients error:",
+      error
+    );
 
     return {
       success: false,
@@ -518,73 +879,91 @@ export async function getPatients(clinicId: string) {
   }
 }
 
-/**
- * Get a single patient.
- */
-export async function getPatient(patientId: string) {
+
+export async function getPatient(
+  patientId: string
+) {
   try {
     if (!patientId) {
-      throw new Error("Patient ID is required");
+      throw new Error(
+        "Patient ID is required"
+      );
     }
 
-    const patient = await prisma.patient.findUnique({
-      where: {
-        id: patientId,
-      },
-      include: {
-        medicalHistory: true,
-        dentalHistory: true,
-        appointments: {
-          orderBy: {
-            date: "desc",
+    const patient =
+      await prisma.patient.findUnique({
+        where: {
+          id: patientId,
+        },
+
+        include: {
+          medicalHistory: true,
+
+          dentalHistory: true,
+
+          appointments: {
+            orderBy: {
+              date: "desc",
+            },
+
+            include: {
+              doctor: true,
+            },
           },
-          include: {
-            doctor: true,
+
+          treatmentRecords: {
+            orderBy: {
+              createdAt: "desc",
+            },
+
+            include: {
+              doctor: true,
+              treatment: true,
+              toothRecord: true,
+            },
+          },
+
+          toothRecords: {
+            orderBy: {
+              toothNumber: "asc",
+            },
+          },
+
+          prescriptions: {
+            orderBy: {
+              prescriptionDate:
+                "desc",
+            },
+
+            include: {
+              doctor: true,
+              items: true,
+            },
+          },
+
+          attachments: {
+            orderBy: {
+              createdAt: "desc",
+            },
+          },
+
+          invoices: {
+            orderBy: {
+              invoiceDate: "desc",
+            },
+
+            include: {
+              items: true,
+              payments: true,
+            },
           },
         },
-        treatmentRecords: {
-          orderBy: {
-            createdAt: "desc",
-          },
-          include: {
-            doctor: true,
-            treatment: true,
-            toothRecord: true,
-          },
-        },
-        toothRecords: {
-          orderBy: {
-            toothNumber: "asc",
-          },
-        },
-        prescriptions: {
-          orderBy: {
-            prescriptionDate: "desc",
-          },
-          include: {
-            doctor: true,
-            items: true,
-          },
-        },
-        attachments: {
-          orderBy: {
-            createdAt: "desc",
-          },
-        },
-        invoices: {
-          orderBy: {
-            invoiceDate: "desc",
-          },
-          include: {
-            items: true,
-            payments: true,
-          },
-        },
-      },
-    });
+      });
 
     if (!patient) {
-      throw new Error("Patient not found");
+      throw new Error(
+        "Patient not found"
+      );
     }
 
     return {
@@ -592,7 +971,10 @@ export async function getPatient(patientId: string) {
       patient,
     };
   } catch (error) {
-    console.error("getPatient error:", error);
+    console.error(
+      "getPatient error:",
+      error
+    );
 
     return {
       success: false,
@@ -604,19 +986,19 @@ export async function getPatient(patientId: string) {
   }
 }
 
-/**
- * Search patients.
- */
 export async function searchPatients(
   clinicId: string,
   search: string
 ) {
   try {
     if (!clinicId) {
-      throw new Error("Clinic ID is required");
+      throw new Error(
+        "Clinic ID is required"
+      );
     }
 
-    const value = search.trim();
+    const value =
+      search.trim();
 
     if (!value) {
       return {
@@ -625,47 +1007,67 @@ export async function searchPatients(
       };
     }
 
-    const patients = await prisma.patient.findMany({
-      where: {
-        clinicId,
-        OR: [
-          {
-            firstName: {
-              contains: value,
-              mode: "insensitive",
+    const patients =
+      await prisma.patient.findMany({
+        where: {
+          clinicId,
+
+          OR: [
+            {
+              firstName: {
+                contains: value,
+                mode: "insensitive",
+              },
             },
-          },
-          {
-            lastName: {
-              contains: value,
-              mode: "insensitive",
+
+            {
+              lastName: {
+                contains: value,
+                mode: "insensitive",
+              },
             },
-          },
-          {
-            patientNumber: {
-              contains: value,
-              mode: "insensitive",
+
+            {
+              patientNumber: {
+                contains: value,
+                mode: "insensitive",
+              },
             },
-          },
-          {
-            phone: {
-              contains: value,
+
+            {
+              phone: {
+                contains: value,
+              },
             },
-          },
-        ],
-      },
-      orderBy: {
-        firstName: "asc",
-      },
-      take: 25,
-    });
+          ],
+        },
+
+        /*
+         * Do not order by patientNumber in Prisma
+         * because it is a string field.
+         */
+        take: 25,
+      });
+
+    /*
+     * Sort search results numerically.
+     */
+    const sortedPatients =
+      sortPatientsByNumber(
+        patients,
+        "asc"
+      );
 
     return {
       success: true,
-      patients,
+      patients:
+        sortedPatients,
     };
   } catch (error) {
-    console.error("searchPatients error:", error);
+    console.error(
+      "searchPatients error:",
+      error
+    );
 
     return {
       success: false,
@@ -677,155 +1079,135 @@ export async function searchPatients(
   }
 }
 
-/**
- * Create or update a patient.
- *
- * patientNumber is generated automatically when creating.
- */
+/* ============================================================
+   SAVE PATIENT
+============================================================ */
+
 export async function savePatient(
   data: Record<string, unknown>
 ) {
   try {
-    const id = str(data.id);
+    const id =
+      str(data.id);
 
-    const clinicId = requiredStr(
-      data.clinicId,
-      "Clinic"
-    );
+    const clinicId =
+      requiredStr(
+        data.clinicId,
+        "Clinic"
+      );
 
-    const firstName = requiredStr(
-      data.firstName,
-      "First name"
-    );
+    const firstName =
+      requiredStr(
+        data.firstName,
+        "First name"
+      );
 
-    const phone = requiredStr(
-      data.phone,
-      "Phone"
-    );
+    const phone =
+      requiredStr(
+        data.phone,
+        "Phone"
+      );
 
     const patientData = {
       clinicId,
 
-      // BASIC PATIENT INFORMATION
-
       firstName,
 
-      lastName: str(data.lastName),
+      lastName:
+        str(data.lastName),
 
-      dateOfBirth: date(
-        data.dateOfBirth
-      ),
+      dateOfBirth:
+        date(data.dateOfBirth),
 
-      age: int(
-        data.age
-      ),
+      age:
+        int(data.age),
 
-      gender: str(
-        data.gender
-      ),
+      gender:
+        str(data.gender),
 
       phone,
 
-      alternatePhone: str(
-        data.alternatePhone
-      ),
+      alternatePhone:
+        str(data.alternatePhone),
 
-      email: str(
-        data.email
-      ),
+      email:
+        str(data.email),
 
-      address: str(
-        data.address
-      ),
+      address:
+        str(data.address),
 
-      occupation: str(
-        data.occupation
-      ),
+      occupation:
+        str(data.occupation),
 
-      bloodGroup: str(
-        data.bloodGroup
-      ),
+      bloodGroup:
+        str(data.bloodGroup),
 
-      // EMERGENCY CONTACT
+      emergencyName:
+        str(data.emergencyName),
 
-      emergencyName: str(
-        data.emergencyName
-      ),
+      emergencyPhone:
+        str(data.emergencyPhone),
 
-      emergencyPhone: str(
-        data.emergencyPhone
-      ),
+      emergencyRelation:
+        str(data.emergencyRelation),
 
-      emergencyRelation: str(
-        data.emergencyRelation
-      ),
+      allergies:
+        str(data.allergies),
 
-      // MEDICAL / ALERT INFORMATION
+      medicalAlerts:
+        str(data.medicalAlerts),
 
-      allergies: str(
-        data.allergies
-      ),
+      currentMedications:
+        str(data.currentMedications),
 
-      medicalAlerts: str(
-        data.medicalAlerts
-      ),
+      previousSurgeries:
+        str(data.previousSurgeries),
 
-      currentMedications: str(
-        data.currentMedications
-      ),
+      dentalHistoryNotes:
+        str(
+          data.dentalHistoryNotes
+        ),
 
-      previousSurgeries: str(
-        data.previousSurgeries
-      ),
+      visitDate:
+        date(data.visitDate),
 
-      // DENTAL BACKGROUND
+      chiefComplaint:
+        str(data.chiefComplaint),
 
-      dentalHistoryNotes: str(
-        data.dentalHistoryNotes
-      ),
+      examination:
+        str(data.examination),
 
-      // CLINICAL ENTRY
+      diagnosis:
+        str(data.diagnosis),
 
-      visitDate: date(
-        data.visitDate
-      ),
+      clinicalNotes:
+        str(data.clinicalNotes),
 
-      chiefComplaint: str(
-        data.chiefComplaint
-      ),
+      treatmentPlan:
+        str(data.treatmentPlan),
 
-      examination: str(
-        data.examination
-      ),
-
-      diagnosis: str(
-        data.diagnosis
-      ),
-
-      clinicalNotes: str(
-        data.clinicalNotes
-      ),
-
-      treatmentPlan: str(
-        data.treatmentPlan
-      ),
-
-      followUpDate: date(
-        data.followUpDate
-      ),
+      followUpDate:
+        date(data.followUpDate),
     };
 
-    // UPDATE EXISTING PATIENT
+    /* ========================================================
+       UPDATE EXISTING PATIENT
+    ======================================================== */
 
     if (id) {
-      const patient = await prisma.patient.update({
-        where: {
-          id,
-        },
-        data: patientData,
-      });
+      const patient =
+        await prisma.patient.update({
+          where: {
+            id,
+          },
 
-      revalidatePatient(patient.id);
+          data:
+            patientData,
+        });
+
+      revalidatePatient(
+        patient.id
+      );
 
       return {
         success: true,
@@ -833,47 +1215,116 @@ export async function savePatient(
       };
     }
 
-    // CREATE NEW PATIENT
+    /* ========================================================
+       CREATE NEW PATIENT
+    ======================================================== */
 
-    const patient = await prisma.$transaction(
-      async (tx) => {
-        const clinic = await tx.clinic.update({
-          where: {
-            id: clinicId,
-          },
-          data: {
-            patientSequence: {
-              increment: 1,
+    const patient =
+      await prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw(
+            Prisma.sql`
+              SELECT pg_advisory_xact_lock(
+                hashtext(${clinicId})
+              )
+            `
+          );
+
+          const clinic =
+            await tx.clinic.findUnique({
+              where: {
+                id: clinicId,
+              },
+
+              select: {
+                patientPrefix: true,
+              },
+            });
+
+          if (!clinic) {
+            throw new Error(
+              "Clinic not found"
+            );
+          }
+
+          const prefix =
+            clinic.patientPrefix ||
+            "JASWITH";
+
+          const patients =
+            await tx.patient.findMany({
+              where: {
+                clinicId,
+              },
+
+              select: {
+                patientNumber: true,
+              },
+            });
+
+          const usedNumbers =
+            new Set<number>();
+
+          for (const patient of patients) {
+            const match =
+              patient.patientNumber.match(
+                /(\d+)$/
+              );
+
+            if (match) {
+              const number =
+                Number(match[1]);
+
+              if (
+                Number.isSafeInteger(
+                  number
+                ) &&
+                number > 0
+              ) {
+                usedNumbers.add(
+                  number
+                );
+              }
+            }
+          }
+
+          let nextNumber = 1;
+
+          while (
+            usedNumbers.has(
+              nextNumber
+            )
+          ) {
+            nextNumber++;
+          }
+
+          const patientNumber =
+            `${prefix}-${String(
+              nextNumber
+            ).padStart(5, "0")}`;
+
+          return tx.patient.create({
+            data: {
+              ...patientData,
+              patientNumber,
             },
-          },
-          select: {
-            patientPrefix: true,
-            patientSequence: true,
-          },
-        });
+          });
+        }
+      );
 
-        const patientNumber =
-          `${clinic.patientPrefix}-${String(
-            clinic.patientSequence
-          ).padStart(5, "0")}`;
-
-        return tx.patient.create({
-          data: {
-            ...patientData,
-            patientNumber,
-          },
-        });
-      }
+    revalidatePatient(
+      patient.id
     );
-
-    revalidatePatient(patient.id);
 
     return {
       success: true,
       patient,
     };
   } catch (error) {
-    console.error("savePatient error:", error);
+    console.error(
+      "savePatient error:",
+      error
+    );
 
     return {
       success: false,
@@ -884,44 +1335,110 @@ export async function savePatient(
     };
   }
 }
+
+/* ============================================================
+   DELETE PATIENT
+============================================================ */
+
+export async function deletePatient(
+  id: string
+) {
+  try {
+    if (!id) {
+      throw new Error(
+        "Patient ID is required"
+      );
+    }
+
+    await prisma.patient.delete({
+      where: {
+        id,
+      },
+    });
+
+    revalidatePatient();
+
+    return {
+      success: true,
+    };
+  } catch (error) {
+    console.error(
+      "deletePatient error:",
+      error
+    );
+
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to delete patient",
+    };
+  }
+}
+
 /* ============================================================
    CLINIC
 ============================================================ */
 
-/**
- * Update an existing clinic.
- */
 export async function updateClinic(
   data: Record<string, unknown>
 ) {
   try {
-    const id = requiredStr(data.id, "Clinic ID");
+    const id =
+      requiredStr(
+        data.id,
+        "Clinic ID"
+      );
 
     const clinicData = {
-      name: requiredStr(data.name, "Clinic name"),
+      name:
+        requiredStr(
+          data.name,
+          "Clinic name"
+        ),
 
-      tagline: str(data.tagline),
-      phone: str(data.phone),
-      whatsapp: str(data.whatsapp),
-      email: str(data.email),
-      address: str(data.address),
-      mapsUrl: str(data.mapsUrl),
-      openingHours: str(data.openingHours),
-      logo: str(data.logo),
+      tagline:
+        str(data.tagline),
+
+      phone:
+        str(data.phone),
+
+      whatsapp:
+        str(data.whatsapp),
+
+      email:
+        str(data.email),
+
+      address:
+        str(data.address),
+
+      mapsUrl:
+        str(data.mapsUrl),
+
+      openingHours:
+        str(data.openingHours),
+
+      logo:
+        str(data.logo),
 
       invoicePrefix:
-        str(data.invoicePrefix) ?? "INV",
+        str(data.invoicePrefix) ??
+        "INV",
 
       patientPrefix:
-        str(data.patientPrefix) ?? "JASWITH",
+        str(data.patientPrefix) ??
+        "JASWITH",
     };
 
-    const clinic = await prisma.clinic.update({
-      where: {
-        id,
-      },
-      data: clinicData,
-    });
+    const clinic =
+      await prisma.clinic.update({
+        where: {
+          id,
+        },
+
+        data: clinicData,
+      });
 
     revalidatePath("/");
     revalidatePath("/settings");
@@ -932,7 +1449,10 @@ export async function updateClinic(
       clinic,
     };
   } catch (error) {
-    console.error("updateClinic error:", error);
+    console.error(
+      "updateClinic error:",
+      error
+    );
 
     return {
       success: false,
@@ -948,40 +1468,47 @@ export async function updateClinic(
    DOCTOR
 ============================================================ */
 
-/**
- * Add a new doctor.
- */
 export async function addDoctor(
   data: Record<string, unknown>
 ) {
   try {
-    const clinicId = requiredStr(
-      data.clinicId,
-      "Clinic"
-    );
+    const clinicId =
+      requiredStr(
+        data.clinicId,
+        "Clinic"
+      );
 
-    const name = requiredStr(
-      data.name,
-      "Doctor name"
-    );
+    const name =
+      requiredStr(
+        data.name,
+        "Doctor name"
+      );
 
-    const doctor = await prisma.doctor.create({
-      data: {
-        clinicId,
+    const doctor =
+      await prisma.doctor.create({
+        data: {
+          clinicId,
 
-        name,
+          name,
 
-        qualification: str(data.qualification),
-        specialization: str(data.specialization),
-        bio: str(data.bio),
-        image: str(data.image),
+          qualification:
+            str(data.qualification),
 
-        active:
-          data.active === undefined
-            ? true
-            : bool(data.active),
-      },
-    });
+          specialization:
+            str(data.specialization),
+
+          bio:
+            str(data.bio),
+
+          image:
+            str(data.image),
+
+          active:
+            data.active === undefined
+              ? true
+              : bool(data.active),
+        },
+      });
 
     revalidatePath("/");
     revalidatePath("/dashboard");
@@ -993,7 +1520,10 @@ export async function addDoctor(
       doctor,
     };
   } catch (error) {
-    console.error("addDoctor error:", error);
+    console.error(
+      "addDoctor error:",
+      error
+    );
 
     return {
       success: false,
@@ -1005,42 +1535,49 @@ export async function addDoctor(
   }
 }
 
-/**
- * Update an existing doctor.
- */
 export async function updateDoctor(
   data: Record<string, unknown>
 ) {
   try {
-    const id = requiredStr(
-      data.id,
-      "Doctor ID"
-    );
+    const id =
+      requiredStr(
+        data.id,
+        "Doctor ID"
+      );
 
-    const name = requiredStr(
-      data.name,
-      "Doctor name"
-    );
+    const name =
+      requiredStr(
+        data.name,
+        "Doctor name"
+      );
 
-    const doctor = await prisma.doctor.update({
-      where: {
-        id,
-      },
+    const doctor =
+      await prisma.doctor.update({
+        where: {
+          id,
+        },
 
-      data: {
-        name,
+        data: {
+          name,
 
-        qualification: str(data.qualification),
-        specialization: str(data.specialization),
-        bio: str(data.bio),
-        image: str(data.image),
+          qualification:
+            str(data.qualification),
 
-        active:
-          data.active === undefined
-            ? true
-            : bool(data.active),
-      },
-    });
+          specialization:
+            str(data.specialization),
+
+          bio:
+            str(data.bio),
+
+          image:
+            str(data.image),
+
+          active:
+            data.active === undefined
+              ? true
+              : bool(data.active),
+        },
+      });
 
     revalidatePath("/");
     revalidatePath("/dashboard");
@@ -1052,7 +1589,10 @@ export async function updateDoctor(
       doctor,
     };
   } catch (error) {
-    console.error("updateDoctor error:", error);
+    console.error(
+      "updateDoctor error:",
+      error
+    );
 
     return {
       success: false,
@@ -1068,40 +1608,49 @@ export async function updateDoctor(
    TESTIMONIAL
 ============================================================ */
 
-/**
- * Add a new testimonial.
- */
 export async function addTestimonial(
   data: Record<string, unknown>
 ) {
   try {
-    const clinicId = requiredStr(
-      data.clinicId,
-      "Clinic"
-    );
+    const clinicId =
+      requiredStr(
+        data.clinicId,
+        "Clinic"
+      );
 
-    const name = requiredStr(
-      data.name,
-      "Patient name"
-    );
+    const name =
+      requiredStr(
+        data.name,
+        "Patient name"
+      );
 
-    const review = requiredStr(
-      data.review,
-      "Review"
-    );
+    const review =
+      requiredStr(
+        data.review,
+        "Review"
+      );
 
-    const ratingValue = int(data.rating);
+    const ratingValue =
+      int(data.rating);
 
-    let rating: number | null = null;
+    let rating:
+      | number
+      | null = null;
 
-    if (ratingValue !== null) {
-      if (ratingValue < 1 || ratingValue > 5) {
+    if (
+      ratingValue !== null
+    ) {
+      if (
+        ratingValue < 1 ||
+        ratingValue > 5
+      ) {
         throw new Error(
           "Rating must be between 1 and 5"
         );
       }
 
-      rating = ratingValue;
+      rating =
+        ratingValue;
     }
 
     const testimonial =
@@ -1140,40 +1689,49 @@ export async function addTestimonial(
   }
 }
 
-/**
- * Update an existing testimonial.
- */
 export async function updateTestimonial(
   data: Record<string, unknown>
 ) {
   try {
-    const id = requiredStr(
-      data.id,
-      "Testimonial ID"
-    );
+    const id =
+      requiredStr(
+        data.id,
+        "Testimonial ID"
+      );
 
-    const name = requiredStr(
-      data.name,
-      "Patient name"
-    );
+    const name =
+      requiredStr(
+        data.name,
+        "Patient name"
+      );
 
-    const review = requiredStr(
-      data.review,
-      "Review"
-    );
+    const review =
+      requiredStr(
+        data.review,
+        "Review"
+      );
 
-    const ratingValue = int(data.rating);
+    const ratingValue =
+      int(data.rating);
 
-    let rating: number | null = null;
+    let rating:
+      | number
+      | null = null;
 
-    if (ratingValue !== null) {
-      if (ratingValue < 1 || ratingValue > 5) {
+    if (
+      ratingValue !== null
+    ) {
+      if (
+        ratingValue < 1 ||
+        ratingValue > 5
+      ) {
         throw new Error(
           "Rating must be between 1 and 5"
         );
       }
 
-      rating = ratingValue;
+      rating =
+        ratingValue;
     }
 
     const testimonial =
@@ -1218,24 +1776,24 @@ export async function updateTestimonial(
    TREATMENT
 ============================================================ */
 
-/**
- * Add a new treatment to the public treatment catalog.
- */
 export async function addTreatment(
   data: Record<string, unknown>
 ) {
   try {
-    const clinicId = requiredStr(
-      data.clinicId,
-      "Clinic"
-    );
+    const clinicId =
+      requiredStr(
+        data.clinicId,
+        "Clinic"
+      );
 
-    const name = requiredStr(
-      data.name,
-      "Treatment name"
-    );
+    const name =
+      requiredStr(
+        data.name,
+        "Treatment name"
+      );
 
-    const price = decimal(data.price);
+    const price =
+      decimal(data.price);
 
     const treatment =
       await prisma.treatment.create({
@@ -1243,8 +1801,12 @@ export async function addTreatment(
           clinicId,
 
           name,
-          description: str(data.description),
-          image: str(data.image),
+
+          description:
+            str(data.description),
+
+          image:
+            str(data.image),
 
           price,
 
@@ -1280,24 +1842,24 @@ export async function addTreatment(
   }
 }
 
-/**
- * Update an existing treatment.
- */
 export async function updateTreatment(
   data: Record<string, unknown>
 ) {
   try {
-    const id = requiredStr(
-      data.id,
-      "Treatment ID"
-    );
+    const id =
+      requiredStr(
+        data.id,
+        "Treatment ID"
+      );
 
-    const name = requiredStr(
-      data.name,
-      "Treatment name"
-    );
+    const name =
+      requiredStr(
+        data.name,
+        "Treatment name"
+      );
 
-    const price = decimal(data.price);
+    const price =
+      decimal(data.price);
 
     const treatment =
       await prisma.treatment.update({
@@ -1308,8 +1870,11 @@ export async function updateTreatment(
         data: {
           name,
 
-          description: str(data.description),
-          image: str(data.image),
+          description:
+            str(data.description),
+
+          image:
+            str(data.image),
 
           price,
 
@@ -1345,44 +1910,6 @@ export async function updateTreatment(
   }
 }
 
-
-export async function deletePatient(
-  id: string
-) {
-  try {
-    if (!id) {
-      throw new Error(
-        "Patient ID is required"
-      );
-    }
-
-    await prisma.patient.delete({
-      where: {
-        id,
-      },
-    });
-
-    revalidatePatient();
-
-    return {
-      success: true,
-    };
-  } catch (error) {
-    console.error(
-      "deletePatient error:",
-      error
-    );
-
-    return {
-      success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : "Failed to delete patient",
-    };
-  }
-}
-
 /* ============================================================
    APPOINTMENTS
 ============================================================ */
@@ -1396,6 +1923,7 @@ export async function getAppointments(
         where: {
           clinicId,
         },
+
         orderBy: [
           {
             date: "desc",
@@ -1404,6 +1932,7 @@ export async function getAppointments(
             time: "desc",
           },
         ],
+
         include: {
           patient: true,
           doctor: true,
@@ -1435,10 +1964,14 @@ export async function saveAppointment(
   data: Record<string, unknown>
 ) {
   try {
-    const id = str(data.id);
+    const id =
+      str(data.id);
 
     const clinicId =
-      requiredStr(data.clinicId, "Clinic");
+      requiredStr(
+        data.clinicId,
+        "Clinic"
+      );
 
     const patientName =
       requiredStr(
@@ -1447,7 +1980,10 @@ export async function saveAppointment(
       );
 
     const phone =
-      requiredStr(data.phone, "Phone");
+      requiredStr(
+        data.phone,
+        "Phone"
+      );
 
     const appointmentDate =
       date(data.date);
@@ -1473,7 +2009,8 @@ export async function saveAppointment(
       patientName,
       phone,
 
-      date: appointmentDate,
+      date:
+        appointmentDate,
 
       time:
         str(data.time),
@@ -1506,12 +2043,15 @@ export async function saveAppointment(
           where: {
             id,
           },
-          data: appointmentData,
+
+          data:
+            appointmentData,
         });
     } else {
       appointment =
         await prisma.appointment.create({
-          data: appointmentData,
+          data:
+            appointmentData,
         });
     }
 
@@ -1587,9 +2127,11 @@ export async function getDoctors(
         where: {
           clinicId,
         },
+
         orderBy: {
           name: "asc",
         },
+
         include: {
           _count: {
             select: {
@@ -1625,25 +2167,37 @@ export async function saveDoctor(
   data: Record<string, unknown>
 ) {
   try {
-    const id = str(data.id);
+    const id =
+      str(data.id);
 
     const clinicId =
-      requiredStr(data.clinicId, "Clinic");
+      requiredStr(
+        data.clinicId,
+        "Clinic"
+      );
 
     const name =
-      requiredStr(data.name, "Doctor name");
+      requiredStr(
+        data.name,
+        "Doctor name"
+      );
 
     const doctorData = {
       clinicId,
       name,
+
       qualification:
         str(data.qualification),
+
       specialization:
         str(data.specialization),
+
       bio:
         str(data.bio),
+
       image:
         str(data.image),
+
       active:
         data.active === undefined
           ? true
@@ -1658,12 +2212,15 @@ export async function saveDoctor(
           where: {
             id,
           },
-          data: doctorData,
+
+          data:
+            doctorData,
         });
     } else {
       doctor =
         await prisma.doctor.create({
-          data: doctorData,
+          data:
+            doctorData,
         });
     }
 
@@ -1736,9 +2293,11 @@ export async function getTreatments(
         where: {
           clinicId,
         },
+
         orderBy: {
           name: "asc",
         },
+
         include: {
           _count: {
             select: {
@@ -1773,10 +2332,14 @@ export async function saveTreatmentCatalog(
   data: Record<string, unknown>
 ) {
   try {
-    const id = str(data.id);
+    const id =
+      str(data.id);
 
     const clinicId =
-      requiredStr(data.clinicId, "Clinic");
+      requiredStr(
+        data.clinicId,
+        "Clinic"
+      );
 
     const name =
       requiredStr(
@@ -1787,12 +2350,16 @@ export async function saveTreatmentCatalog(
     const treatmentData = {
       clinicId,
       name,
+
       description:
         str(data.description),
+
       image:
         str(data.image),
+
       price:
         decimal(data.price),
+
       active:
         data.active === undefined
           ? true
@@ -1807,17 +2374,25 @@ export async function saveTreatmentCatalog(
           where: {
             id,
           },
-          data: treatmentData,
+
+          data:
+            treatmentData,
         });
     } else {
       treatment =
         await prisma.treatment.create({
-          data: treatmentData,
+          data:
+            treatmentData,
         });
     }
 
-    revalidatePath("/treatments");
-    revalidatePath("/dashboard");
+    revalidatePath(
+      "/treatments"
+    );
+
+    revalidatePath(
+      "/dashboard"
+    );
 
     return {
       success: true,
@@ -1849,8 +2424,13 @@ export async function deleteTreatmentCatalog(
       },
     });
 
-    revalidatePath("/treatments");
-    revalidatePath("/dashboard");
+    revalidatePath(
+      "/treatments"
+    );
+
+    revalidatePath(
+      "/dashboard"
+    );
 
     return {
       success: true,
@@ -1884,9 +2464,11 @@ export async function getPatientTreatments(
         where: {
           patientId,
         },
+
         orderBy: {
           createdAt: "desc",
         },
+
         include: {
           doctor: true,
           treatment: true,
@@ -1919,7 +2501,8 @@ export async function saveTreatment(
   data: Record<string, unknown>
 ) {
   try {
-    const id = str(data.id);
+    const id =
+      str(data.id);
 
     const patientId =
       requiredStr(
@@ -1975,16 +2558,21 @@ export async function saveTreatment(
           where: {
             id,
           },
-          data: treatmentData,
+
+          data:
+            treatmentData,
         });
     } else {
       treatment =
         await prisma.treatmentRecord.create({
-          data: treatmentData,
+          data:
+            treatmentData,
         });
     }
 
-    revalidatePatient(patientId);
+    revalidatePatient(
+      patientId
+    );
 
     return {
       success: true,
@@ -2015,6 +2603,7 @@ export async function deleteTreatment(
         where: {
           id,
         },
+
         select: {
           patientId: true,
         },
@@ -2032,7 +2621,9 @@ export async function deleteTreatment(
       },
     });
 
-    revalidatePatient(record.patientId);
+    revalidatePatient(
+      record.patientId
+    );
 
     return {
       success: true,
@@ -2061,7 +2652,8 @@ export async function saveToothRecord(
   data: Record<string, unknown>
 ) {
   try {
-    const id = str(data.id);
+    const id =
+      str(data.id);
 
     const patientId =
       requiredStr(
@@ -2112,16 +2704,21 @@ export async function saveToothRecord(
           where: {
             id,
           },
-          data: toothData,
+
+          data:
+            toothData,
         });
     } else {
       tooth =
         await prisma.toothRecord.create({
-          data: toothData,
+          data:
+            toothData,
         });
     }
 
-    revalidatePatient(patientId);
+    revalidatePatient(
+      patientId
+    );
 
     return {
       success: true,
@@ -2152,6 +2749,7 @@ export async function deleteToothRecord(
         where: {
           id,
         },
+
         select: {
           patientId: true,
         },
@@ -2169,7 +2767,9 @@ export async function deleteToothRecord(
       },
     });
 
-    revalidatePatient(tooth.patientId);
+    revalidatePatient(
+      tooth.patientId
+    );
 
     return {
       success: true,
@@ -2203,9 +2803,12 @@ export async function getPatientPrescriptions(
         where: {
           patientId,
         },
+
         orderBy: {
-          prescriptionDate: "desc",
+          prescriptionDate:
+            "desc",
         },
+
         include: {
           doctor: true,
           items: true,
@@ -2236,7 +2839,8 @@ export async function savePrescription(
   data: Record<string, unknown>
 ) {
   try {
-    const id = str(data.id);
+    const id =
+      str(data.id);
 
     const patientId =
       requiredStr(
@@ -2245,8 +2849,9 @@ export async function savePrescription(
       );
 
     const prescriptionDate =
-      date(data.prescriptionDate) ??
-      new Date();
+      date(
+        data.prescriptionDate
+      ) ?? new Date();
 
     const items =
       Array.isArray(data.items)
@@ -2265,27 +2870,30 @@ export async function savePrescription(
         str(data.notes),
     };
 
-    const itemData = items.map(
-      (item: any) => ({
-        medicine:
-          requiredStr(
-            item.medicine,
-            "Medicine"
-          ),
+    const itemData =
+      items.map(
+        (item: any) => ({
+          medicine:
+            requiredStr(
+              item.medicine,
+              "Medicine"
+            ),
 
-        dosage:
-          str(item.dosage),
+          dosage:
+            str(item.dosage),
 
-        frequency:
-          str(item.frequency),
+          frequency:
+            str(item.frequency),
 
-        duration:
-          str(item.duration),
+          duration:
+            str(item.duration),
 
-        instructions:
-          str(item.instructions),
-      })
-    );
+          instructions:
+            str(
+              item.instructions
+            ),
+        })
+      );
 
     let prescription;
 
@@ -2296,7 +2904,8 @@ export async function savePrescription(
             await tx.prescriptionItem.deleteMany(
               {
                 where: {
-                  prescriptionId: id,
+                  prescriptionId:
+                    id,
                 },
               }
             );
@@ -2305,12 +2914,16 @@ export async function savePrescription(
               where: {
                 id,
               },
+
               data: {
                 ...prescriptionData,
+
                 items: {
-                  create: itemData,
+                  create:
+                    itemData,
                 },
               },
+
               include: {
                 items: true,
                 doctor: true,
@@ -2323,10 +2936,13 @@ export async function savePrescription(
         await prisma.prescription.create({
           data: {
             ...prescriptionData,
+
             items: {
-              create: itemData,
+              create:
+                itemData,
             },
           },
+
           include: {
             items: true,
             doctor: true,
@@ -2334,7 +2950,9 @@ export async function savePrescription(
         });
     }
 
-    revalidatePatient(patientId);
+    revalidatePatient(
+      patientId
+    );
 
     return {
       success: true,
@@ -2365,6 +2983,7 @@ export async function deletePrescription(
         where: {
           id,
         },
+
         select: {
           patientId: true,
         },
@@ -2413,7 +3032,8 @@ export async function saveAttachment(
   data: Record<string, unknown>
 ) {
   try {
-    const id = str(data.id);
+    const id =
+      str(data.id);
 
     const patientId =
       requiredStr(
@@ -2467,16 +3087,21 @@ export async function saveAttachment(
           where: {
             id,
           },
-          data: attachmentData,
+
+          data:
+            attachmentData,
         });
     } else {
       attachment =
         await prisma.attachment.create({
-          data: attachmentData,
+          data:
+            attachmentData,
         });
     }
 
-    revalidatePatient(patientId);
+    revalidatePatient(
+      patientId
+    );
 
     return {
       success: true,
@@ -2513,6 +3138,7 @@ export async function deleteAttachment(
         where: {
           id,
         },
+
         select: {
           patientId: true,
         },
@@ -2581,7 +3207,9 @@ export async function saveMedicalHistory(
         bool(data.asthma),
 
       bleedingDisorder:
-        bool(data.bleedingDisorder),
+        bool(
+          data.bleedingDisorder
+        ),
 
       kidneyDisease:
         bool(data.kidneyDisease),
@@ -2590,7 +3218,9 @@ export async function saveMedicalHistory(
         bool(data.liverDisease),
 
       thyroidDisease:
-        bool(data.thyroidDisease),
+        bool(
+          data.thyroidDisease
+        ),
 
       epilepsy:
         bool(data.epilepsy),
@@ -2608,13 +3238,19 @@ export async function saveMedicalHistory(
         bool(data.alcoholUse),
 
       currentMedications:
-        str(data.currentMedications),
+        str(
+          data.currentMedications
+        ),
 
       previousSurgeries:
-        str(data.previousSurgeries),
+        str(
+          data.previousSurgeries
+        ),
 
       otherConditions:
-        str(data.otherConditions),
+        str(
+          data.otherConditions
+        ),
 
       familyHistory:
         str(data.familyHistory),
@@ -2631,10 +3267,13 @@ export async function saveMedicalHistory(
           ...historyData,
         },
 
-        update: historyData,
+        update:
+          historyData,
       });
 
-    revalidatePatient(patientId);
+    revalidatePatient(
+      patientId
+    );
 
     return {
       success: true,
@@ -2672,16 +3311,24 @@ export async function saveDentalHistory(
 
     const historyData = {
       previousDentist:
-        str(data.previousDentist),
+        str(
+          data.previousDentist
+        ),
 
       lastDentalVisit:
-        date(data.lastDentalVisit),
+        date(
+          data.lastDentalVisit
+        ),
 
       brushingFrequency:
-        str(data.brushingFrequency),
+        str(
+          data.brushingFrequency
+        ),
 
       flossingFrequency:
-        str(data.flossingFrequency),
+        str(
+          data.flossingFrequency
+        ),
 
       sensitivity:
         bool(data.sensitivity),
@@ -2693,10 +3340,14 @@ export async function saveDentalHistory(
         bool(data.toothPain),
 
       previousRootCanal:
-        bool(data.previousRootCanal),
+        bool(
+          data.previousRootCanal
+        ),
 
       previousExtraction:
-        bool(data.previousExtraction),
+        bool(
+          data.previousExtraction
+        ),
 
       dentures:
         bool(data.dentures),
@@ -2708,7 +3359,9 @@ export async function saveDentalHistory(
         bool(data.braces),
 
       previousTreatments:
-        str(data.previousTreatments),
+        str(
+          data.previousTreatments
+        ),
 
       dentalNotes:
         str(data.dentalNotes),
@@ -2725,10 +3378,13 @@ export async function saveDentalHistory(
           ...historyData,
         },
 
-        update: historyData,
+        update:
+          historyData,
       });
 
-    revalidatePatient(patientId);
+    revalidatePatient(
+      patientId
+    );
 
     return {
       success: true,
@@ -2763,9 +3419,11 @@ export async function getInvoices(
         where: {
           clinicId,
         },
+
         orderBy: {
           invoiceDate: "desc",
         },
+
         include: {
           patient: true,
           items: true,
@@ -2802,15 +3460,18 @@ export async function getInvoice(
         where: {
           id,
         },
+
         include: {
           clinic: true,
           patient: true,
+
           items: {
             include: {
               treatment: true,
               treatmentRecord: true,
             },
           },
+
           payments: {
             orderBy: {
               paymentDate: "desc",
@@ -2859,6 +3520,7 @@ async function generateInvoiceNumber(
           where: {
             id: clinicId,
           },
+
           select: {
             invoicePrefix: true,
           },
@@ -2871,19 +3533,24 @@ async function generateInvoiceNumber(
       }
 
       const prefix =
-        clinic.invoicePrefix || "INV";
+        clinic.invoicePrefix ||
+        "INV";
 
       const latest =
         await tx.invoice.findFirst({
           where: {
             clinicId,
+
             invoiceNumber: {
-              startsWith: `${prefix}-`,
+              startsWith:
+                `${prefix}-`,
             },
           },
+
           orderBy: {
             createdAt: "desc",
           },
+
           select: {
             invoiceNumber: true,
           },
@@ -2891,7 +3558,9 @@ async function generateInvoiceNumber(
 
       let nextNumber = 1;
 
-      if (latest?.invoiceNumber) {
+      if (
+        latest?.invoiceNumber
+      ) {
         const match =
           latest.invoiceNumber.match(
             /(\d+)$/
@@ -2918,7 +3587,8 @@ export async function saveBill(
   data: Record<string, unknown>
 ) {
   try {
-    const id = str(data.id);
+    const id =
+      str(data.id);
 
     const clinicId =
       requiredStr(
@@ -2937,42 +3607,52 @@ export async function saveBill(
         ? data.items
         : [];
 
-    const itemData = items.map(
-      (item: any) => {
-        const quantity =
-          int(item.quantity) ?? 1;
+    const itemData =
+      items.map(
+        (item: any) => {
+          const quantity =
+            int(item.quantity) ??
+            1;
 
-        const unitPrice =
-          decimal(item.unitPrice) ??
-          new Prisma.Decimal(0);
+          const unitPrice =
+            decimal(
+              item.unitPrice
+            ) ??
+            new Prisma.Decimal(0);
 
-        const amount =
-          decimal(item.amount) ??
-          unitPrice.mul(quantity);
+          const amount =
+            decimal(
+              item.amount
+            ) ??
+            unitPrice.mul(
+              quantity
+            );
 
-        return {
-          treatmentId:
-            str(item.treatmentId),
+          return {
+            treatmentId:
+              str(
+                item.treatmentId
+              ),
 
-          treatmentRecordId:
-            str(
-              item.treatmentRecordId
-            ),
+            treatmentRecordId:
+              str(
+                item.treatmentRecordId
+              ),
 
-          description:
-            requiredStr(
-              item.description,
-              "Invoice item description"
-            ),
+            description:
+              requiredStr(
+                item.description,
+                "Invoice item description"
+              ),
 
-          quantity,
+            quantity,
 
-          unitPrice,
+            unitPrice,
 
-          amount,
-        };
-      }
-    );
+            amount,
+          };
+        }
+      );
 
     const subtotal =
       decimal(data.subtotal) ??
@@ -2981,15 +3661,21 @@ export async function saveBill(
           total,
           item
         ) =>
-          total.add(item.amount),
+          total.add(
+            item.amount
+          ),
         new Prisma.Decimal(0)
       );
 
     const discount =
-      decimalZero(data.discount);
+      decimalZero(
+        data.discount
+      );
 
     const tax =
-      decimalZero(data.tax);
+      decimalZero(
+        data.tax
+      );
 
     const total =
       decimal(data.total) ??
@@ -3010,7 +3696,8 @@ export async function saveBill(
             await tx.invoiceItem.deleteMany(
               {
                 where: {
-                  invoiceId: id,
+                  invoiceId:
+                    id,
                 },
               }
             );
@@ -3037,13 +3724,17 @@ export async function saveBill(
                 invoiceDate:
                   date(
                     data.invoiceDate
-                  ) ?? new Date(),
+                  ) ??
+                  new Date(),
 
                 dueDate:
-                  date(data.dueDate),
+                  date(
+                    data.dueDate
+                  ),
 
                 items: {
-                  create: itemData,
+                  create:
+                    itemData,
                 },
               },
 
@@ -3056,7 +3747,9 @@ export async function saveBill(
         );
     } else {
       const suppliedNumber =
-        str(data.invoiceNumber);
+        str(
+          data.invoiceNumber
+        );
 
       const invoiceNumber =
         suppliedNumber ??
@@ -3085,13 +3778,17 @@ export async function saveBill(
             invoiceDate:
               date(
                 data.invoiceDate
-              ) ?? new Date(),
+              ) ??
+              new Date(),
 
             dueDate:
-              date(data.dueDate),
+              date(
+                data.dueDate
+              ),
 
             items: {
-              create: itemData,
+              create:
+                itemData,
             },
           },
 
@@ -3102,7 +3799,10 @@ export async function saveBill(
         });
     }
 
-    revalidatePatient(patientId);
+    revalidatePatient(
+      patientId
+    );
+
     revalidateBilling();
 
     return {
@@ -3137,6 +3837,7 @@ async function refreshInvoiceStatus(
       where: {
         id: invoiceId,
       },
+
       select: {
         id: true,
         total: true,
@@ -3149,7 +3850,10 @@ async function refreshInvoiceStatus(
     return null;
   }
 
-  if (invoice.status === "CANCELLED") {
+  if (
+    invoice.status ===
+    "CANCELLED"
+  ) {
     return invoice;
   }
 
@@ -3158,6 +3862,7 @@ async function refreshInvoiceStatus(
       where: {
         invoiceId,
       },
+
       _sum: {
         amount: true,
       },
@@ -3189,6 +3894,7 @@ async function refreshInvoiceStatus(
     where: {
       id: invoiceId,
     },
+
     data: {
       status,
     },
@@ -3214,7 +3920,9 @@ export async function addPayment(
 
     if (
       !amount ||
-      amount.lessThanOrEqualTo(0)
+      amount.lessThanOrEqualTo(
+        0
+      )
     ) {
       throw new Error(
         "Payment amount must be greater than zero"
@@ -3226,6 +3934,7 @@ export async function addPayment(
         where: {
           id: invoiceId,
         },
+
         select: {
           id: true,
           total: true,
@@ -3269,7 +3978,8 @@ export async function addPayment(
           paymentDate:
             date(
               data.paymentDate
-            ) ?? new Date(),
+            ) ??
+            new Date(),
         },
       });
 
@@ -3318,6 +4028,7 @@ export async function deletePayment(
         where: {
           id,
         },
+
         include: {
           invoice: {
             select: {
@@ -3381,6 +4092,7 @@ export async function getTestimonials(
         where: {
           clinicId,
         },
+
         orderBy: {
           createdAt: "desc",
         },
@@ -3410,7 +4122,8 @@ export async function saveTestimonial(
   data: Record<string, unknown>
 ) {
   try {
-    const id = str(data.id);
+    const id =
+      str(data.id);
 
     const clinicId =
       requiredStr(
@@ -3448,17 +4161,22 @@ export async function saveTestimonial(
           where: {
             id,
           },
-          data: testimonialData,
+
+          data:
+            testimonialData,
         });
     } else {
       testimonial =
         await prisma.testimonial.create({
-          data: testimonialData,
+          data:
+            testimonialData,
         });
     }
 
     revalidatePath("/");
-    revalidatePath("/testimonials");
+    revalidatePath(
+      "/testimonials"
+    );
 
     return {
       success: true,
@@ -3491,7 +4209,9 @@ export async function deleteTestimonial(
     });
 
     revalidatePath("/");
-    revalidatePath("/testimonials");
+    revalidatePath(
+      "/testimonials"
+    );
 
     return {
       success: true,
@@ -3525,19 +4245,23 @@ export async function getClinic(
         where: {
           id: clinicId,
         },
+
         include: {
           doctors: {
             where: {
               active: true,
             },
+
             orderBy: {
               name: "asc",
             },
           },
+
           treatments: {
             where: {
               active: true,
             },
+
             orderBy: {
               name: "asc",
             },
@@ -3575,7 +4299,8 @@ export async function saveClinic(
   data: Record<string, unknown>
 ) {
   try {
-    const id = str(data.id);
+    const id =
+      str(data.id);
 
     const clinicData = {
       name:
@@ -3625,18 +4350,25 @@ export async function saveClinic(
           where: {
             id,
           },
-          data: clinicData,
+
+          data:
+            clinicData,
         });
     } else {
       clinic =
         await prisma.clinic.create({
-          data: clinicData,
+          data:
+            clinicData,
         });
     }
 
     revalidatePath("/");
-    revalidatePath("/settings");
-    revalidatePath("/dashboard");
+    revalidatePath(
+      "/settings"
+    );
+    revalidatePath(
+      "/dashboard"
+    );
 
     return {
       success: true,
@@ -3669,6 +4401,7 @@ export async function getAdminUsers() {
         orderBy: {
           createdAt: "desc",
         },
+
         select: {
           id: true,
           email: true,
@@ -3704,7 +4437,8 @@ export async function saveAdminUser(
   data: Record<string, unknown>
 ) {
   try {
-    const id = str(data.id);
+    const id =
+      str(data.id);
 
     const email =
       requiredStr(
@@ -3717,6 +4451,7 @@ export async function saveAdminUser(
 
     const userData = {
       email,
+
       name:
         str(data.name),
 
@@ -3747,7 +4482,10 @@ export async function saveAdminUser(
           where: {
             id,
           },
-          data: updateData,
+
+          data:
+            updateData,
+
           select: {
             id: true,
             email: true,
@@ -3771,6 +4509,7 @@ export async function saveAdminUser(
             ...userData,
             passwordHash,
           },
+
           select: {
             id: true,
             email: true,
@@ -3783,8 +4522,13 @@ export async function saveAdminUser(
         });
     }
 
-    revalidatePath("/settings");
-    revalidatePath("/dashboard");
+    revalidatePath(
+      "/settings"
+    );
+
+    revalidatePath(
+      "/dashboard"
+    );
 
     return {
       success: true,
@@ -3816,8 +4560,13 @@ export async function deleteAdminUser(
       },
     });
 
-    revalidatePath("/settings");
-    revalidatePath("/dashboard");
+    revalidatePath(
+      "/settings"
+    );
+
+    revalidatePath(
+      "/dashboard"
+    );
 
     return {
       success: true,
@@ -3872,8 +4621,12 @@ export async function createAuditLog(
             str(data.entityId),
 
           metadata:
-            data.metadata !== undefined
-              ? (data.metadata as Prisma.InputJsonValue)
+            data.metadata !==
+            undefined
+              ? (
+                  data.metadata as
+                    Prisma.InputJsonValue
+                )
               : undefined,
 
           ipAddress:
@@ -3910,10 +4663,15 @@ export async function getAuditLogs(
         orderBy: {
           createdAt: "desc",
         },
+
         take: Math.min(
-          Math.max(limit, 1),
+          Math.max(
+            limit,
+            1
+          ),
           500
         ),
+
         include: {
           user: {
             select: {

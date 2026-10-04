@@ -3,77 +3,122 @@ import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
-const addDays = (days: number, hour = 10, minute = 0) => {
-  const date = new Date();
-  date.setHours(hour, minute, 0, 0);
-  date.setDate(date.getDate() + days);
-  return date;
-};
-
 async function main() {
   console.log("==========================================");
-  console.log("JASWITH DENTAL CARE - TEST DATABASE SEED");
+  console.log("Jaswith Dental Care - Production Seed");
   console.log("==========================================");
 
-  /**
-   * IMPORTANT:
-   * This seed contains ONLY synthetic/demo data.
-   * Do not use real patient information here.
-   */
-
   // ============================================================
-  // FLUSH DATABASE
+  // DATABASE CONNECTION
   // ============================================================
 
-  console.log("Flushing existing database...");
+  const databaseUrl = process.env.DATABASE_URL;
+
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL is not configured.");
+  }
+
+  console.log("DATABASE_URL is configured.");
+  console.log("Starting complete database flush...");
+
+  // ============================================================
+  // FLUSH ALL TABLES
+  // ============================================================
+  //
+  // Delete child records first because of foreign-key constraints.
+  // Everything will be removed before the new seed data is created.
+  //
+  // ============================================================
 
   await prisma.$transaction(async (tx) => {
+    console.log("Deleting AuditLog...");
     await tx.auditLog.deleteMany();
+
+    console.log("Deleting Payment...");
     await tx.payment.deleteMany();
+
+    console.log("Deleting InvoiceItem...");
     await tx.invoiceItem.deleteMany();
+
+    console.log("Deleting Invoice...");
     await tx.invoice.deleteMany();
 
+    console.log("Deleting Attachment...");
     await tx.attachment.deleteMany();
 
+    console.log("Deleting PrescriptionItem...");
     await tx.prescriptionItem.deleteMany();
+
+    console.log("Deleting Prescription...");
     await tx.prescription.deleteMany();
 
+    console.log("Deleting TreatmentRecord...");
     await tx.treatmentRecord.deleteMany();
+
+    console.log("Deleting ToothRecord...");
     await tx.toothRecord.deleteMany();
 
+    // ClinicalRecord has been removed from the new schema.
+    // Patient now contains the clinical-entry fields directly.
+
+    console.log("Deleting Appointment...");
     await tx.appointment.deleteMany();
 
+    console.log("Deleting DentalHistory...");
     await tx.dentalHistory.deleteMany();
+
+    console.log("Deleting MedicalHistory...");
     await tx.medicalHistory.deleteMany();
 
+    console.log("Deleting Patient...");
     await tx.patient.deleteMany();
 
+    console.log("Deleting Testimonial...");
     await tx.testimonial.deleteMany();
+
+    console.log("Deleting Treatment...");
     await tx.treatment.deleteMany();
+
+    console.log("Deleting Doctor...");
     await tx.doctor.deleteMany();
+
+    console.log("Deleting AdminUser...");
     await tx.adminUser.deleteMany();
+
+    console.log("Deleting Clinic...");
     await tx.clinic.deleteMany();
   });
 
-  console.log("Database flushed.");
+  console.log("");
+
+  console.log("==========================================");
+  console.log("DATABASE FLUSH COMPLETED");
+  console.log("==========================================");
+
+  console.log("");
 
   // ============================================================
-  // ADMIN
+  // ADMIN USER
   // ============================================================
 
-  const passwordHash = await argon2.hash("demo123456", {
+  const email = process.env.ADMIN_EMAIL ?? "admin@gmail.com";
+  const password = process.env.ADMIN_PASSWORD ?? "admin123";
+
+  const passwordHash = await argon2.hash(password, {
     type: argon2.argon2id,
   });
 
   const admin = await prisma.adminUser.create({
     data: {
-      email: "demo@jaswithdental.test",
+      email,
       passwordHash,
-      name: "Demo Admin",
+      name: "Jaswith Admin",
       role: "ADMIN",
       active: true,
     },
   });
+
+  console.log(`Admin created: ${admin.email}`);
 
   // ============================================================
   // CLINIC
@@ -81,21 +126,38 @@ async function main() {
 
   const clinic = await prisma.clinic.create({
     data: {
-      name: "Jaswith Dental Care - Demo",
-      tagline: "Dental Care Management Demo",
-      phone: "9000000000",
-      whatsapp: "9000000000",
-      email: "demo@jaswithdental.test",
-      address: "Demo Dental Street, Chennai",
-      mapsUrl: null,
+      name: "Jaswith Dental Care",
+
+      tagline:
+        "Advanced dental implants and complete smile care in Chennai",
+
+      phone: "+91 8525033648",
+
+      whatsapp: "+91 8525033648",
+
+      email: "",
+
+      address:
+        "48/58, Mangailakshmi Building, Vadamalai Street, Purasaiwakkam, Chennai - 600007",
+
+      mapsUrl:
+        "https://www.google.com/maps/place/Jaswith+Dental+Care",
+
       openingHours:
-        "Mon–Sat: 10:00 AM–1:00 PM & 4:30 PM–8:30 PM",
+        "Mon–Sat: 10:00 AM–1:00 PM & 4:30 PM–8:30 PM · Sundays by appointment",
+
       logo: null,
+
       invoicePrefix: "INV",
+
       patientPrefix: "JDC",
+
       patientSequence: 0,
     },
   });
+
+  console.log(`Clinic created: ${clinic.name}`);
+  console.log(`Clinic ID: ${clinic.id}`);
 
   // ============================================================
   // DOCTOR
@@ -104,366 +166,195 @@ async function main() {
   const doctor = await prisma.doctor.create({
     data: {
       clinicId: clinic.id,
-      name: "Dr. Demo Doctor",
+
+      name: "Dr. Sailakshmi J.",
+
       qualification: "BDS, MDS",
-      specialization: "Prosthodontics & Implantology",
-      bio: "Demo doctor profile for development and testing.",
+
+      specialization: "Prosthodontist & Implantologist",
+
+      bio:
+        "Specialises in advanced dental implants, full mouth rehabilitation, and smile design.",
+
       image: null,
+
       active: true,
     },
   });
+
+  console.log(`Doctor created: ${doctor.name}`);
 
   // ============================================================
   // TREATMENTS
   // ============================================================
 
-  const treatmentData = [
+  const treatments = [
     {
-      name: "Consultation",
-      description: "General dental consultation",
-      price: 500,
+      name: "Dental Implants",
+
+      description:
+        "Advanced, long-lasting replacement for missing teeth.",
+
+      image: null,
+
+      price: null,
     },
+
     {
-      name: "Scaling",
-      description: "Professional dental cleaning",
-      price: 1500,
+      name: "Complete & Partial Dentures",
+
+      description:
+        "Custom-fitted dentures restoring function and appearance.",
+
+      image: null,
+
+      price: null,
     },
+
     {
-      name: "Filling",
-      description: "Dental filling procedure",
-      price: 1200,
+      name: "Smile Designing & Cosmetics",
+
+      description:
+        "Cosmetic treatments tailored to enhance your smile.",
+
+      image: null,
+
+      price: null,
     },
+
     {
-      name: "Root Canal Treatment",
-      description: "Root canal treatment",
-      price: 5000,
-    },
-    {
-      name: "Crown / Bridge",
-      description: "Dental crown and bridge treatment",
-      price: 6000,
-    },
-    {
-      name: "Extraction",
-      description: "Dental extraction",
-      price: 1000,
+      name: "Root Canal & Full Mouth Rehab",
+
+      description:
+        "Comprehensive root canal therapy and full mouth restoration.",
+
+      image: null,
+
+      price: null,
     },
   ];
 
-  const treatments = [];
-
-  for (const treatment of treatmentData) {
-    const created = await prisma.treatment.create({
+  for (const treatment of treatments) {
+    const createdTreatment = await prisma.treatment.create({
       data: {
         clinicId: clinic.id,
+
         name: treatment.name,
+
         description: treatment.description,
-        image: null,
+
+        image: treatment.image,
+
         price: treatment.price,
+
         active: true,
       },
     });
 
-    treatments.push(created);
+    console.log(`Treatment created: ${createdTreatment.name}`);
   }
 
   // ============================================================
-  // PATIENTS
-  // ============================================================
-
-  const patients = [];
-
-  const patientData = [
-    {
-      firstName: "Arun",
-      phone: "9000000001",
-      gender: "MALE",
-    },
-    {
-      firstName: "Priya",
-      phone: "9000000002",
-      gender: "FEMALE",
-    },
-    {
-      firstName: "Rahul",
-      phone: "9000000003",
-      gender: "MALE",
-    },
-    {
-      firstName: "Kavya",
-      phone: "9000000004",
-      gender: "FEMALE",
-    },
-    {
-      firstName: "Vikram",
-      phone: "9000000005",
-      gender: "MALE",
-    },
-    {
-      firstName: "Meera",
-      phone: "9000000006",
-      gender: "FEMALE",
-    },
-  ];
-
-  for (let i = 0; i < patientData.length; i++) {
-    const data = patientData[i];
-
-    const patient = await prisma.patient.create({
-      data: {
-        clinicId: clinic.id,
-
-        // Explicitly sequential for demo/testing.
-        patientNumber: `JDC-${String(i + 1).padStart(3, "0")}`,
-
-        firstName: data.firstName,
-        phone: data.phone,
-
-        gender: data.gender,
-
-        visitDate: addDays(-i),
-
-        chiefComplaint:
-          i % 2 === 0
-            ? "Routine dental consultation"
-            : "Tooth pain and sensitivity",
-
-        examination:
-          "Demo examination data for development testing.",
-
-        diagnosis:
-          i % 2 === 0
-            ? "Routine dental evaluation"
-            : "Dental caries",
-
-        clinicalNotes:
-          "Synthetic clinical data. Not a real patient.",
-
-        treatmentPlan:
-          i % 2 === 0
-            ? "Routine follow-up"
-            : "Treatment and follow-up required",
-
-        followUpDate: addDays(7 + i),
-      },
-    });
-
-    patients.push(patient);
-  }
-
-  // ============================================================
-  // APPOINTMENTS
-  // ============================================================
-
-  /**
-   * Multiple appointments for the SAME patient.
-   *
-   * This is important for testing your new requirement:
-   *
-   * Patient JDC-001
-   *   Appointment 1 -> Consultation
-   *   Appointment 2 -> Root Canal
-   *   Appointment 3 -> Follow-up
-   */
-
-  await prisma.appointment.createMany({
-    data: [
-      {
-        clinicId: clinic.id,
-        patientName: patients[0].firstName,
-        phone: patients[0].phone,
-        date: addDays(-5, 10, 0),
-      },
-      {
-        clinicId: clinic.id,
-        patientName: patients[0].firstName,
-        phone: patients[0].phone,
-        date: addDays(-2, 11, 0),
-      },
-      {
-        clinicId: clinic.id,
-        patientName: patients[0].firstName,
-        phone: patients[0].phone,
-        date: addDays(5, 10, 30),
-      },
-
-      {
-        clinicId: clinic.id,
-        patientName: patients[1].firstName,
-        phone: patients[1].phone,
-        date: addDays(-3, 16, 0),
-      },
-      {
-        clinicId: clinic.id,
-        patientName: patients[1].firstName,
-        phone: patients[1].phone,
-        date: addDays(4, 16, 30),
-      },
-
-      {
-        clinicId: clinic.id,
-        patientName: patients[2].firstName,
-        phone: patients[2].phone,
-        date: addDays(0, 10, 0),
-      },
-
-      {
-        clinicId: clinic.id,
-        patientName: patients[3].firstName,
-        phone: patients[3].phone,
-        date: addDays(2, 11, 30),
-      },
-
-      {
-        clinicId: clinic.id,
-        patientName: patients[4].firstName,
-        phone: patients[4].phone,
-        date: addDays(7, 17, 0),
-      },
-
-      {
-        clinicId: clinic.id,
-        patientName: patients[5].firstName,
-        phone: patients[5].phone,
-        date: addDays(10, 18, 0),
-      },
-    ],
-  });
-
-  // ============================================================
-  // INVOICES
-  // ============================================================
-
-  const invoice1 = await prisma.invoice.create({
-    data: {
-      clinicId: clinic.id,
-      patientId: patients[0].id,
-      invoiceNumber: "INV-0001",
-      subtotal: 500,
-      total: 500,
-    },
-  });
-
-  await prisma.invoiceItem.create({
-    data: {
-      invoiceId: invoice1.id,
-      description: "Consultation",
-      quantity: 1,
-      unitPrice: 500,
-      amount: 500,
-    },
-  });
-
-  const invoice2 = await prisma.invoice.create({
-    data: {
-      clinicId: clinic.id,
-      patientId: patients[1].id,
-      invoiceNumber: "INV-0002",
-      subtotal: 1500,
-      total: 1500,
-    },
-  });
-
-  await prisma.invoiceItem.create({
-    data: {
-      invoiceId: invoice2.id,
-      description: "Scaling",
-      quantity: 1,
-      unitPrice: 1500,
-      amount: 1500,
-    },
-  });
-
-  const invoice3 = await prisma.invoice.create({
-    data: {
-      clinicId: clinic.id,
-      patientId: patients[2].id,
-      invoiceNumber: "INV-0003",
-      subtotal: 5000,
-      total: 5000,
-    },
-  });
-
-  await prisma.invoiceItem.create({
-    data: {
-      invoiceId: invoice3.id,
-      description: "Root Canal Treatment",
-      quantity: 1,
-      unitPrice: 5000,
-      amount: 5000,
-    },
-  });
-
-  // ============================================================
-  // PAYMENTS
-  // ============================================================
-
-  await prisma.payment.create({
-    data: {
-      invoiceId: invoice1.id,
-      amount: 500,
-      method: "CASH",
-    },
-  });
-
-  await prisma.payment.create({
-    data: {
-      invoiceId: invoice2.id,
-      amount: 1500,
-      method: "UPI",
-    },
-  });
-
-  await prisma.payment.create({
-    data: {
-      invoiceId: invoice3.id,
-      amount: 3000,
-      method: "CARD",
-    },
-  });
-
-  // ============================================================
-  // VERIFY
+  // VERIFY DATABASE
   // ============================================================
 
   console.log("");
+
   console.log("==========================================");
-  console.log("TEST DATABASE CREATED");
+  console.log("VERIFYING DATABASE");
   console.log("==========================================");
+
+  const counts = await Promise.all([
+    prisma.adminUser.count(),
+    prisma.clinic.count(),
+    prisma.doctor.count(),
+    prisma.treatment.count(),
+    prisma.testimonial.count(),
+    prisma.patient.count(),
+    prisma.appointment.count(),
+    prisma.toothRecord.count(),
+    prisma.treatmentRecord.count(),
+    prisma.prescription.count(),
+    prisma.attachment.count(),
+    prisma.invoice.count(),
+    prisma.invoiceItem.count(),
+    prisma.payment.count(),
+    prisma.auditLog.count(),
+    prisma.medicalHistory.count(),
+    prisma.dentalHistory.count(),
+    prisma.prescriptionItem.count(),
+  ]);
+
+  console.log("");
+
+  console.log(`AdminUser:          ${counts[0]}`);
+  console.log(`Clinic:             ${counts[1]}`);
+  console.log(`Doctor:             ${counts[2]}`);
+  console.log(`Treatment:          ${counts[3]}`);
+  console.log(`Testimonial:        ${counts[4]}`);
+  console.log(`Patient:            ${counts[5]}`);
+  console.log(`Appointment:        ${counts[6]}`);
+  console.log(`ToothRecord:        ${counts[7]}`);
+  console.log(`TreatmentRecord:    ${counts[8]}`);
+  console.log(`Prescription:       ${counts[9]}`);
+  console.log(`Attachment:         ${counts[10]}`);
+  console.log(`Invoice:            ${counts[11]}`);
+  console.log(`InvoiceItem:        ${counts[12]}`);
+  console.log(`Payment:            ${counts[13]}`);
+  console.log(`AuditLog:           ${counts[14]}`);
+  console.log(`MedicalHistory:     ${counts[15]}`);
+  console.log(`DentalHistory:      ${counts[16]}`);
+  console.log(`PrescriptionItem:   ${counts[17]}`);
+
+  console.log("");
+
+  console.log("==========================================");
+  console.log("SEED COMPLETED");
+  console.log("==========================================");
+
+  console.log("");
 
   console.log(`Admin:       ${admin.email}`);
   console.log(`Clinic:      ${clinic.name}`);
   console.log(`Doctor:      ${doctor.name}`);
-  console.log(`Patients:    ${patients.length}`);
   console.log(`Treatments:  ${treatments.length}`);
 
   console.log("");
-  console.log("Demo Patient IDs:");
 
-  for (const patient of patients) {
-    console.log(
-      `${patient.patientNumber} -> ${patient.firstName}`
-    );
-  }
+  console.log("Expected database state:");
 
-  console.log("");
-  console.log("Multiple appointment test:");
-  console.log("JDC-001 -> 3 appointments");
-  console.log("JDC-002 -> 2 appointments");
-
-  console.log("");
-  console.log("==========================================");
-  console.log("SEED COMPLETED");
-  console.log("==========================================");
+  console.log("- 1 AdminUser");
+  console.log("- 1 Clinic");
+  console.log("- 1 Doctor");
+  console.log("- 4 Treatments");
+  console.log("- 0 Testimonials");
+  console.log("- 0 Patients");
+  console.log("- 0 Appointments");
+  console.log("- 0 ToothRecords");
+  console.log("- 0 TreatmentRecords");
+  console.log("- 0 Prescriptions");
+  console.log("- 0 Attachments");
+  console.log("- 0 Invoices");
+  console.log("- 0 InvoiceItems");
+  console.log("- 0 Payments");
+  console.log("- 0 AuditLogs");
+  console.log("- 0 MedicalHistories");
+  console.log("- 0 DentalHistories");
+  console.log("- 0 PrescriptionItems");
 }
 
 main()
   .catch((error) => {
     console.error("");
+
     console.error("==========================================");
-    console.error("TEST SEED FAILED");
+    console.error("SEED FAILED");
     console.error("==========================================");
+
+    console.error("");
+
     console.error(error);
+
     process.exit(1);
   })
   .finally(async () => {

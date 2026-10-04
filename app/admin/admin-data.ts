@@ -1,5 +1,6 @@
 import prisma from "@/prisma";
 import { getClinic } from "@/src/lib/clinic";
+import { getPatients } from "./actions";
 
 function serializeData<T>(value: T): any {
   if (value instanceof Date) {
@@ -29,12 +30,11 @@ function serializeData<T>(value: T): any {
 
   return value;
 }
-
 export async function getAdminData() {
   const clinic = await getClinic();
 
   const [
-    patients,
+    patientsResult,
     appointments,
     doctors,
     treatments,
@@ -45,20 +45,11 @@ export async function getAdminData() {
   ] = await Promise.all([
     // ==========================================================
     // PATIENTS
-    // Clinical information is now stored directly on Patient.
+    // Use the centralized getPatients() function.
+    // This guarantees patientNumber sorting and the same
+    // patient relations used by the Patients page.
     // ==========================================================
-    prisma.patient.findMany({
-      where: {
-        clinicId: clinic.id,
-      },
-      include: {
-        medicalHistory: true,
-        dentalHistory: true,
-      },
-      orderBy: {
-        registeredAt: "desc",
-      },
-    }),
+    getPatients(clinic.id),
 
     // ==========================================================
     // APPOINTMENTS
@@ -153,9 +144,16 @@ export async function getAdminData() {
     }),
   ]);
 
+  // getPatients() returns { success, patients }
+  if (!patientsResult.success) {
+    throw new Error(
+      patientsResult.error || "Failed to load patients"
+    );
+  }
+
   return serializeData({
     clinic,
-    patients,
+    patients: patientsResult.patients,
     appointments,
     doctors,
     treatments,
@@ -165,3 +163,4 @@ export async function getAdminData() {
     attachments,
   });
 }
+

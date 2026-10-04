@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   addPayment,
@@ -35,10 +41,6 @@ type Patient = {
   allergies: string | null;
   medicalAlerts: string | null;
 
-  /*
-   * Clinical information lives directly on the
-   * patient record (combined patient + clinical entry).
-   */
   visitDate?: string | null;
   diagnosis?: string | null;
   treatmentPlan?: string | null;
@@ -196,16 +198,513 @@ const fullName = (
     .join(" ");
 };
 
-/**
- * Turn a FormData object into a plain object, the shape
- * every action in actions.ts actually expects. Server
- * actions here take `Record<string, unknown>`, not FormData.
- */
 const toPayload = (
   formData: FormData
 ): Record<string, unknown> => {
   return Object.fromEntries(formData.entries());
 };
+
+/* ============================================================
+   SEARCHABLE PATIENT PICKER
+============================================================ */
+
+type PatientPickerProps = {
+  patients: Patient[];
+  name?: string;
+  value?: string | null;
+  required?: boolean;
+  placeholder?: string;
+  onChange?: (patientId: string) => void;
+};
+
+function PatientPicker({
+  patients,
+  name = "patientId",
+  value = "",
+  required = false,
+  placeholder = "Search patient by name, ID or phone...",
+  onChange,
+}: PatientPickerProps) {
+  const pickerId = useId();
+
+  const inputId = `${pickerId}-input`;
+  const listId = `${pickerId}-list`;
+
+  const rootRef =
+    useRef<HTMLDivElement>(null);
+
+  const inputRef =
+    useRef<HTMLInputElement>(null);
+
+  const [selectedId, setSelectedId] =
+    useState(value || "");
+
+  const [search, setSearch] =
+    useState("");
+
+  const [open, setOpen] =
+    useState(false);
+
+  const [highlightedIndex, setHighlightedIndex] =
+    useState(0);
+
+  const selectedPatient = useMemo(
+    () =>
+      patients.find(
+        (patient) =>
+          patient.id === selectedId
+      ),
+    [patients, selectedId]
+  );
+
+  /*
+   * Search across the fields that staff are most
+   * likely to know when looking for a patient.
+   */
+  const filteredPatients = useMemo(() => {
+    const query = search
+      .trim()
+      .toLowerCase();
+
+    if (!query) {
+      return patients.slice(0, 50);
+    }
+
+    const matches = patients.filter(
+      (patient) => {
+        const searchableText = [
+          patient.patientNumber,
+          patient.firstName,
+          patient.lastName,
+          fullName(patient),
+          patient.phone,
+          patient.email,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+
+        return searchableText.includes(query);
+      }
+    );
+
+    /*
+     * Render only the first 50 matches.
+     * Search still runs against the entire patient
+     * collection, but the browser does not have to
+     * render thousands of option elements.
+     */
+    return matches.slice(0, 50);
+  }, [patients, search]);
+
+  useEffect(() => {
+    setSelectedId(value || "");
+  }, [value]);
+
+  useEffect(() => {
+    const handleOutsideClick = (
+      event: MouseEvent
+    ) => {
+      if (
+        rootRef.current &&
+        !rootRef.current.contains(
+          event.target as Node
+        )
+      ) {
+        setOpen(false);
+        setSearch("");
+        setHighlightedIndex(0);
+      }
+    };
+
+    document.addEventListener(
+      "mousedown",
+      handleOutsideClick
+    );
+
+    return () => {
+      document.removeEventListener(
+        "mousedown",
+        handleOutsideClick
+      );
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      highlightedIndex >=
+      filteredPatients.length
+    ) {
+      setHighlightedIndex(
+        Math.max(
+          0,
+          filteredPatients.length - 1
+        )
+      );
+    }
+  }, [
+    filteredPatients.length,
+    highlightedIndex,
+  ]);
+
+  const selectPatient = (
+    patient: Patient
+  ) => {
+    setSelectedId(patient.id);
+    setSearch("");
+    setOpen(false);
+    setHighlightedIndex(0);
+
+    onChange?.(patient.id);
+
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+  };
+
+  const clearPatient = () => {
+    setSelectedId("");
+    setSearch("");
+    setOpen(false);
+    setHighlightedIndex(0);
+
+    onChange?.("");
+
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+  };
+
+  const handleKeyDown = (
+    event: React.KeyboardEvent<HTMLInputElement>
+  ) => {
+    if (
+      event.key === "ArrowDown"
+    ) {
+      event.preventDefault();
+
+      setOpen(true);
+
+      setHighlightedIndex(
+        (current) =>
+          filteredPatients.length === 0
+            ? 0
+            : Math.min(
+                current + 1,
+                filteredPatients.length - 1
+              )
+      );
+
+      return;
+    }
+
+    if (
+      event.key === "ArrowUp"
+    ) {
+      event.preventDefault();
+
+      setOpen(true);
+
+      setHighlightedIndex(
+        (current) =>
+          Math.max(current - 1, 0)
+      );
+
+      return;
+    }
+
+    if (
+      event.key === "Enter"
+    ) {
+      if (
+        open &&
+        filteredPatients[
+          highlightedIndex
+        ]
+      ) {
+        event.preventDefault();
+
+        selectPatient(
+          filteredPatients[
+            highlightedIndex
+          ]
+        );
+      }
+
+      return;
+    }
+
+    if (
+      event.key === "Escape"
+    ) {
+      event.preventDefault();
+
+      setOpen(false);
+      setSearch("");
+      setHighlightedIndex(0);
+
+      return;
+    }
+
+    if (
+      event.key === "Backspace" &&
+      !search &&
+      selectedPatient
+    ) {
+      clearPatient();
+    }
+  };
+
+  return (
+    <div
+      ref={rootRef}
+      className="patient-picker"
+    >
+      {/*
+       * This hidden field is the actual form value.
+       * Existing server actions continue receiving:
+       *
+       * patientId = "..."
+       */}
+      <input
+        type="hidden"
+        name={name}
+        value={selectedId}
+      />
+
+      <div
+        className={`patient-picker-control ${
+          open ? "open" : ""
+        }`}
+      >
+        <input
+          ref={inputRef}
+          id={inputId}
+          type="text"
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-haspopup="listbox"
+          aria-label="Search patient"
+          aria-activedescendant={
+            open &&
+            filteredPatients[
+              highlightedIndex
+            ]
+              ? `${pickerId}-option-${filteredPatients[highlightedIndex].id}`
+              : undefined
+          }
+          value={
+            open
+              ? search
+              : selectedPatient
+              ? `${selectedPatient.patientNumber} — ${fullName(
+                  selectedPatient
+                )}`
+              : ""
+          }
+          placeholder={
+            selectedPatient && !open
+              ? `${selectedPatient.patientNumber} — ${fullName(
+                  selectedPatient
+                )}`
+              : placeholder
+          }
+          onFocus={() => {
+            setOpen(true);
+
+            setSearch("");
+
+            setHighlightedIndex(0);
+          }}
+          onClick={() => {
+            setOpen(true);
+
+            setSearch("");
+
+            setHighlightedIndex(0);
+          }}
+          onChange={(event) => {
+            setSearch(
+              event.target.value
+            );
+
+            setOpen(true);
+
+            setHighlightedIndex(0);
+
+            /*
+             * If staff starts typing after a patient
+             * was selected, clear the previous selection.
+             */
+            if (selectedId) {
+              setSelectedId("");
+
+              onChange?.("");
+            }
+          }}
+          onKeyDown={handleKeyDown}
+          autoComplete="off"
+          className="patient-picker-input"
+        />
+
+        {selectedPatient && (
+          <button
+            type="button"
+            className="patient-picker-clear"
+            aria-label="Clear patient"
+            onMouseDown={(event) => {
+              event.preventDefault();
+            }}
+            onClick={clearPatient}
+          >
+            ×
+          </button>
+        )}
+
+        <span
+          className={`patient-picker-arrow ${
+            open ? "up" : ""
+          }`}
+          aria-hidden="true"
+        >
+          ▾
+        </span>
+      </div>
+
+      {open && (
+        <div
+          id={listId}
+          role="listbox"
+          className="patient-picker-menu"
+        >
+          <div className="patient-picker-summary">
+            {search
+              ? filteredPatients.length > 0
+                ? `${filteredPatients.length}${
+                    filteredPatients.length === 50
+                      ? "+"
+                      : ""
+                  } patient${
+                    filteredPatients.length === 1
+                      ? ""
+                      : "s"
+                  } found`
+                : "No patients found"
+              : `${patients.length.toLocaleString(
+                  "en-IN"
+                )} patients`}
+          </div>
+
+          {filteredPatients.length === 0 ? (
+            <div className="patient-picker-empty">
+              <strong>
+                No patient found
+              </strong>
+
+              <span>
+                Try the patient ID, name,
+                phone number or email.
+              </span>
+            </div>
+          ) : (
+            filteredPatients.map(
+              (patient, index) => {
+                const isSelected =
+                  patient.id === selectedId;
+
+                const isHighlighted =
+                  index ===
+                  highlightedIndex;
+
+                return (
+                  <button
+                    key={patient.id}
+                    id={`${pickerId}-option-${patient.id}`}
+                    type="button"
+                    role="option"
+                    aria-selected={
+                      isSelected
+                    }
+                    className={`patient-picker-option ${
+                      isHighlighted
+                        ? "highlighted"
+                        : ""
+                    } ${
+                      isSelected
+                        ? "selected"
+                        : ""
+                    }`}
+                    onMouseDown={(event) => {
+                      /*
+                       * Prevent the input from blurring
+                       * before selection is processed.
+                       */
+                      event.preventDefault();
+                    }}
+                    onMouseEnter={() =>
+                      setHighlightedIndex(
+                        index
+                      )
+                    }
+                    onClick={() =>
+                      selectPatient(
+                        patient
+                      )
+                    }
+                  >
+                    <div className="patient-picker-option-main">
+                      <strong>
+                        {fullName(patient)}
+                      </strong>
+
+                      <span>
+                        {patient.patientNumber}
+                      </span>
+                    </div>
+
+                    <div className="patient-picker-option-meta">
+                      <span>
+                        {patient.phone}
+                      </span>
+
+                      {patient.email && (
+                        <span>
+                          {patient.email}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              }
+            )
+          )}
+
+          {filteredPatients.length ===
+            50 && (
+            <div className="patient-picker-more">
+              Showing first 50 matches.
+              Keep typing to narrow the
+              results.
+            </div>
+          )}
+        </div>
+      )}
+
+      {required && (
+        <span
+          className="patient-picker-required"
+          aria-hidden="true"
+        >
+          {selectedId
+            ? ""
+            : "Patient selection required"}
+        </span>
+      )}
+    </div>
+  );
+}
 
 /* ============================================================
    PAGE
@@ -327,8 +826,15 @@ export default function AdminPage({
 
     const uploadData = new FormData();
 
-    uploadData.append("file", file);
-    uploadData.append("folder", folder);
+    uploadData.append(
+      "file",
+      file
+    );
+
+    uploadData.append(
+      "folder",
+      folder
+    );
 
     const response = await fetch(
       "/api/upload",
@@ -375,7 +881,10 @@ export default function AdminPage({
     title: string,
     body: React.ReactNode
   ) => {
-    setModal({ title, body });
+    setModal({
+      title,
+      body,
+    });
   };
 
   const closeModal = () => {
@@ -383,41 +892,25 @@ export default function AdminPage({
   };
 
   /* ==========================================================
-     PATIENT OPTIONS
+     PATIENT PICKER HELPER
   ========================================================== */
 
-  const patientOptions = () => {
+  const patientPicker = (
+    value?: string | null,
+    required = false
+  ) => {
     return (
-      <>
-        <option value="">
-          Select patient
-        </option>
-
-        {patients.map((patient) => (
-          <option
-            key={patient.id}
-            value={patient.id}
-          >
-            {patient.patientNumber} —{" "}
-            {fullName(patient)}
-          </option>
-        ))}
-      </>
+      <PatientPicker
+        patients={patients}
+        name="patientId"
+        value={value}
+        required={required}
+      />
     );
   };
 
   /* ==========================================================
-     COMBINED PATIENT + CLINICAL ENTRY
-
-     This single form is submitted straight to savePatient(),
-     which now stores demographic info AND the clinical entry
-     (visitDate / diagnosis / treatmentPlan / clinicalNotes /
-     followUpDate) on the same Patient record.
-
-     - patientNumber (Patient ID) is never sent: it is always
-       generated server-side.
-     - There is no consent / patient-notes field.
-     - There is no tooth region or procedures field.
+     PATIENT
   ========================================================== */
 
   const newPatient = (
@@ -436,16 +929,15 @@ export default function AdminPage({
           payload.id = patient.id;
         }
 
-        /*
-         * Patient ID (patientNumber) must always be
-         * generated by the backend.
-         */
         delete payload.patientNumber;
 
-        const result = await savePatient(payload);
+        const result =
+          await savePatient(payload);
 
         if (!result.success) {
-          throw new Error(result.error);
+          throw new Error(
+            result.error
+          );
         }
 
         closeModal();
@@ -468,9 +960,6 @@ export default function AdminPage({
         action={formAction}
         className="space-y-5"
       >
-        {/* ================================================
-            PATIENT IDENTIFICATION
-        ================================================ */}
         <div className="section-title">
           <h3>
             Patient details
@@ -598,10 +1087,6 @@ export default function AdminPage({
           </div>
         </div>
 
-        {/* ================================================
-            MEDICAL ALERTS
-        ================================================ */}
-
         <div className="section-title">
           <h3>
             Medical alerts
@@ -640,10 +1125,6 @@ export default function AdminPage({
           </div>
         </div>
 
-        {/* ================================================
-            CLINICAL ENTRY (combined with patient record)
-        ================================================ */}
-
         <div className="section-title">
           <h3>
             Clinical entry
@@ -665,7 +1146,10 @@ export default function AdminPage({
               type="date"
               defaultValue={
                 patient?.visitDate
-                  ? patient.visitDate.slice(0, 10)
+                  ? patient.visitDate.slice(
+                      0,
+                      10
+                    )
                   : today()
               }
               required
@@ -682,7 +1166,10 @@ export default function AdminPage({
               type="date"
               defaultValue={
                 patient?.followUpDate
-                  ? patient.followUpDate.slice(0, 10)
+                  ? patient.followUpDate.slice(
+                      0,
+                      10
+                    )
                   : ""
               }
             />
@@ -731,10 +1218,6 @@ export default function AdminPage({
           />
         </div>
 
-        {/* ================================================
-            ACTIONS
-        ================================================ */}
-
         <div className="actions">
           <button type="submit">
             Save patient
@@ -764,18 +1247,26 @@ export default function AdminPage({
     ) => {
       try {
         const patientId =
-          formData.get("patientId")?.toString();
+          formData
+            .get("patientId")
+            ?.toString();
 
-        const selectedPatient = patients.find(
-          (p) => p.id === patientId
-        );
+        const selectedPatient =
+          patients.find(
+            (p) =>
+              p.id === patientId
+          );
 
         const payload: Record<string, unknown> = {
           clinicId: clinic.id,
           ...toPayload(formData),
-          patientName: selectedPatient
-            ? fullName(selectedPatient)
-            : appointment?.patientName || "",
+          patientName:
+            selectedPatient
+              ? fullName(
+                  selectedPatient
+                )
+              : appointment?.patientName ||
+                "",
           phone:
             selectedPatient?.phone ||
             appointment?.phone ||
@@ -783,13 +1274,19 @@ export default function AdminPage({
         };
 
         if (appointment?.id) {
-          payload.id = appointment.id;
+          payload.id =
+            appointment.id;
         }
 
-        const result = await saveAppointment(payload);
+        const result =
+          await saveAppointment(
+            payload
+          );
 
         if (!result.success) {
-          throw new Error(result.error);
+          throw new Error(
+            result.error
+          );
         }
 
         closeModal();
@@ -828,15 +1325,10 @@ export default function AdminPage({
               Patient *
             </label>
 
-            <select
-              name="patientId"
-              defaultValue={
-                appointment?.patientId || ""
-              }
-              required
-            >
-              {patientOptions()}
-            </select>
+            {patientPicker(
+              appointment?.patientId,
+              true
+            )}
           </div>
 
           <div>
@@ -849,7 +1341,10 @@ export default function AdminPage({
               type="date"
               defaultValue={
                 appointment?.date
-                  ? appointment.date.slice(0, 10)
+                  ? appointment.date.slice(
+                      0,
+                      10
+                    )
                   : today()
               }
               required
@@ -865,7 +1360,8 @@ export default function AdminPage({
               name="time"
               type="time"
               defaultValue={
-                appointment?.time || ""
+                appointment?.time ||
+                ""
               }
             />
           </div>
@@ -878,7 +1374,8 @@ export default function AdminPage({
             <input
               name="reason"
               defaultValue={
-                appointment?.reason || ""
+                appointment?.reason ||
+                ""
               }
               placeholder="Consultation / follow-up / emergency..."
             />
@@ -892,7 +1389,8 @@ export default function AdminPage({
             <input
               name="treatment"
               defaultValue={
-                appointment?.treatment || ""
+                appointment?.treatment ||
+                ""
               }
             />
           </div>
@@ -905,7 +1403,8 @@ export default function AdminPage({
             <select
               name="status"
               defaultValue={
-                appointment?.status || "PENDING"
+                appointment?.status ||
+                "PENDING"
               }
             >
               <option value="PENDING">
@@ -969,11 +1468,6 @@ export default function AdminPage({
 
   /* ==========================================================
      BILL
-
-     saveBill() expects `items` as an array of
-     { description, amount }, not raw text, so the textarea
-     is parsed before the action is called. If a "paid now"
-     amount is entered, addPayment() is called right after.
   ========================================================== */
 
   const newBill = () => {
@@ -981,54 +1475,87 @@ export default function AdminPage({
       formData: FormData
     ) => {
       try {
-        const raw = toPayload(formData);
+        const raw =
+          toPayload(formData);
 
-        const itemsText = String(raw.items || "");
+        const itemsText = String(
+          raw.items || ""
+        );
 
         const items = itemsText
           .split("\n")
-          .map((line) => line.trim())
+          .map((line) =>
+            line.trim()
+          )
           .filter(Boolean)
           .map((line) => {
-            const [description, amount] = line
+            const [
+              description,
+              amount,
+            ] = line
               .split("|")
-              .map((part) => part.trim());
+              .map((part) =>
+                part.trim()
+              );
 
             return {
-              description: description || "Item",
-              amount: Number(amount) || 0,
+              description:
+                description ||
+                "Item",
+              amount:
+                Number(amount) || 0,
             };
           });
 
         const payload: Record<string, unknown> = {
           clinicId: clinic.id,
-          patientId: raw.patientId,
-          invoiceDate: raw.date,
-          invoiceNumber: raw.invoiceNumber,
+          patientId:
+            raw.patientId,
+          invoiceDate:
+            raw.date,
+          invoiceNumber:
+            raw.invoiceNumber,
           items,
-          discount: raw.discount,
+          discount:
+            raw.discount,
           tax: raw.tax,
           total: raw.total,
           notes: raw.notes,
         };
 
-        const result = await saveBill(payload);
+        const result =
+          await saveBill(
+            payload
+          );
 
         if (!result.success) {
-          throw new Error(result.error);
+          throw new Error(
+            result.error
+          );
         }
 
-        const paidNow = Number(raw.paid || 0);
+        const paidNow =
+          Number(raw.paid || 0);
 
-        if (paidNow > 0 && result.invoice?.id) {
-          const paymentResult = await addPayment({
-            invoiceId: result.invoice.id,
-            amount: paidNow,
-            method: raw.method,
-          });
+        if (
+          paidNow > 0 &&
+          result.invoice?.id
+        ) {
+          const paymentResult =
+            await addPayment({
+              invoiceId:
+                result.invoice.id,
+              amount: paidNow,
+              method:
+                raw.method,
+            });
 
-          if (!paymentResult.success) {
-            throw new Error(paymentResult.error);
+          if (
+            !paymentResult.success
+          ) {
+            throw new Error(
+              paymentResult.error
+            );
           }
         }
 
@@ -1053,15 +1580,13 @@ export default function AdminPage({
         <div className="grid">
           <div>
             <label>
-              Patient
+              Patient *
             </label>
 
-            <select
-              name="patientId"
-              required
-            >
-              {patientOptions()}
-            </select>
+            {patientPicker(
+              "",
+              true
+            )}
           </div>
 
           <div>
@@ -1208,10 +1733,6 @@ RCT | 5000`}
 
   /* ==========================================================
      PRESCRIPTION
-
-     savePrescription() expects `items` as an array of
-     { medicine, instructions }, so the textarea (one
-     medicine per line) is parsed before calling the action.
   ========================================================== */
 
   const newPrescription = () => {
@@ -1219,31 +1740,50 @@ RCT | 5000`}
       formData: FormData
     ) => {
       try {
-        const raw = toPayload(formData);
+        const raw =
+          toPayload(formData);
 
-        const medicineLines = String(raw.text || "")
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean);
+        const medicineLines =
+          String(
+            raw.text || ""
+          )
+            .split("\n")
+            .map((line) =>
+              line.trim()
+            )
+            .filter(Boolean);
 
-        const items = medicineLines.map(
-          (medicine) => ({
-            medicine,
-            instructions: String(raw.instructions || ""),
-          })
-        );
+        const items =
+          medicineLines.map(
+            (medicine) => ({
+              medicine,
+              instructions:
+                String(
+                  raw.instructions ||
+                    ""
+                ),
+            })
+          );
 
         const payload: Record<string, unknown> = {
-          patientId: raw.patientId,
-          prescriptionDate: raw.date,
-          notes: raw.instructions,
+          patientId:
+            raw.patientId,
+          prescriptionDate:
+            raw.date,
+          notes:
+            raw.instructions,
           items,
         };
 
-        const result = await savePrescription(payload);
+        const result =
+          await savePrescription(
+            payload
+          );
 
         if (!result.success) {
-          throw new Error(result.error);
+          throw new Error(
+            result.error
+          );
         }
 
         closeModal();
@@ -1267,15 +1807,13 @@ RCT | 5000`}
         <div className="grid">
           <div>
             <label>
-              Patient
+              Patient *
             </label>
 
-            <select
-              name="patientId"
-              required
-            >
-              {patientOptions()}
-            </select>
+            {patientPicker(
+              "",
+              true
+            )}
           </div>
 
           <div>
@@ -1305,7 +1843,9 @@ Paracetamol 500mg — SOS`}
           Instructions
         </label>
 
-        <textarea name="instructions" />
+        <textarea
+          name="instructions"
+        />
 
         <div className="actions">
           <button type="submit">
@@ -1341,153 +1881,276 @@ Paracetamol 500mg — SOS`}
   const todayAppointments =
     appointments.filter(
       (appointment) =>
-        appointment.date.slice(0, 10) === today() &&
-        appointment.status !== "CANCELLED"
+        appointment.date.slice(
+          0,
+          10
+        ) === today() &&
+        appointment.status !==
+          "CANCELLED"
     ).length;
 
   const pendingPayments =
-    invoices.reduce((sum, invoice) => {
-      const paid = invoice.payments.reduce(
-        (total, payment) =>
-          total + Number(payment.amount),
-        0
-      );
+    invoices.reduce(
+      (sum, invoice) => {
+        const paid =
+          invoice.payments.reduce(
+            (
+              total,
+              payment
+            ) =>
+              total +
+              Number(
+                payment.amount
+              ),
+            0
+          );
 
-      return (
-        sum +
-        Math.max(0, Number(invoice.total) - paid)
-      );
-    }, 0);
-
-  const currentMonth = today().slice(0, 7);
-
-  const monthlyRevenue = invoices
-    .filter(
-      (invoice) =>
-        invoice.invoiceDate.slice(0, 7) === currentMonth
-    )
-    .reduce(
-      (sum, invoice) =>
-        sum +
-        invoice.payments.reduce(
-          (total, payment) =>
-            total + Number(payment.amount),
-          0
-        ),
+        return (
+          sum +
+          Math.max(
+            0,
+            Number(
+              invoice.total
+            ) - paid
+          )
+        );
+      },
       0
     );
 
-  const upcomingDashboardAppointments = useMemo(() => {
-    const now = new Date();
+  const currentMonth =
+    today().slice(0, 7);
 
-    return appointments
+  const monthlyRevenue =
+    invoices
       .filter(
-        (appointment) =>
-          new Date(appointment.date) >= now &&
-          appointment.status !== "CANCELLED"
+        (invoice) =>
+          invoice.invoiceDate.slice(
+            0,
+            7
+          ) === currentMonth
       )
-      .sort(
-        (a, b) =>
-          new Date(a.date).getTime() -
-          new Date(b.date).getTime()
-      )
-      .slice(0, 8);
-  }, [appointments]);
+      .reduce(
+        (
+          sum,
+          invoice
+        ) =>
+          sum +
+          invoice.payments.reduce(
+            (
+              total,
+              payment
+            ) =>
+              total +
+              Number(
+                payment.amount
+              ),
+            0
+          ),
+        0
+      );
+
+  const upcomingDashboardAppointments =
+    useMemo(() => {
+      const now =
+        new Date();
+
+      return appointments
+        .filter(
+          (appointment) =>
+            new Date(
+              appointment.date
+            ) >= now &&
+            appointment.status !==
+              "CANCELLED"
+        )
+        .sort(
+          (a, b) =>
+            new Date(
+              a.date
+            ).getTime() -
+            new Date(
+              b.date
+            ).getTime()
+        )
+        .slice(0, 8);
+    }, [appointments]);
 
   /* ==========================================================
      FILTERED DATA
   ========================================================== */
 
-  const filteredPatients = patients.filter((patient) => {
-    const query = patientSearch.toLowerCase();
+  const filteredPatients =
+    patients.filter(
+      (patient) => {
+        const query =
+          patientSearch.toLowerCase();
 
-    return `${fullName(patient)} ${patient.phone} ${
-      patient.patientNumber
-    }`
-      .toLowerCase()
-      .includes(query);
-  });
-
-  const filteredAppointments = useMemo(() => {
-    let result = [...appointments];
-
-    if (appointmentFilter === "today") {
-      result = result.filter(
-        (appointment) =>
-          appointment.date.slice(0, 10) === today()
-      );
-    }
-
-    if (appointmentFilter === "upcoming") {
-      const now = new Date();
-
-      result = result.filter(
-        (appointment) =>
-          new Date(appointment.date) >= now &&
-          appointment.status !== "CANCELLED"
-      );
-    }
-
-    if (appointmentFilter === "completed") {
-      result = result.filter(
-        (appointment) =>
-          appointment.status === "COMPLETED"
-      );
-    }
-
-    return result.sort(
-      (a, b) =>
-        new Date(a.date).getTime() -
-        new Date(b.date).getTime()
-    );
-  }, [appointments, appointmentFilter]);
-
-  const filteredInvoices = invoices.filter((invoice) => {
-    const patient = patients.find(
-      (p) => p.id === invoice.patientId
+        return `${fullName(
+          patient
+        )} ${patient.phone} ${
+          patient.patientNumber
+        }`
+          .toLowerCase()
+          .includes(query);
+      }
     );
 
-    return fullName(patient)
-      .toLowerCase()
-      .includes(billSearch.toLowerCase());
-  });
+  const filteredAppointments =
+    useMemo(() => {
+      let result = [
+        ...appointments,
+      ];
 
-  const filteredRx = prescriptions.filter((rx) => {
-    const patient = patients.find(
-      (p) => p.id === rx.patientId
+      if (
+        appointmentFilter ===
+        "today"
+      ) {
+        result =
+          result.filter(
+            (
+              appointment
+            ) =>
+              appointment.date.slice(
+                0,
+                10
+              ) === today()
+          );
+      }
+
+      if (
+        appointmentFilter ===
+        "upcoming"
+      ) {
+        const now =
+          new Date();
+
+        result =
+          result.filter(
+            (
+              appointment
+            ) =>
+              new Date(
+                appointment.date
+              ) >= now &&
+              appointment.status !==
+                "CANCELLED"
+          );
+      }
+
+      if (
+        appointmentFilter ===
+        "completed"
+      ) {
+        result =
+          result.filter(
+            (
+              appointment
+            ) =>
+              appointment.status ===
+              "COMPLETED"
+          );
+      }
+
+      return result.sort(
+        (a, b) =>
+          new Date(
+            a.date
+          ).getTime() -
+          new Date(
+            b.date
+          ).getTime()
+      );
+    }, [
+      appointments,
+      appointmentFilter,
+    ]);
+
+  const filteredInvoices =
+    invoices.filter(
+      (invoice) => {
+        const patient =
+          patients.find(
+            (p) =>
+              p.id ===
+              invoice.patientId
+          );
+
+        return fullName(
+          patient
+        )
+          .toLowerCase()
+          .includes(
+            billSearch.toLowerCase()
+          );
+      }
     );
 
-    return fullName(patient)
-      .toLowerCase()
-      .includes(rxSearch.toLowerCase());
-  });
+  const filteredRx =
+    prescriptions.filter(
+      (rx) => {
+        const patient =
+          patients.find(
+            (p) =>
+              p.id ===
+              rx.patientId
+          );
+
+        return fullName(
+          patient
+        )
+          .toLowerCase()
+          .includes(
+            rxSearch.toLowerCase()
+          );
+      }
+    );
 
   /* ==========================================================
      PATIENT HELPERS
   ========================================================== */
 
-  const patientName = (id: string | null) => {
+  const patientName = (
+    id: string | null
+  ) => {
     if (!id) return "Unknown";
 
-    const patient = patients.find((p) => p.id === id);
-
-    return fullName(patient);
-  };
-
-  const lastVisitDate = (patientId: string) => {
-    const visits = appointments
-      .filter(
-        (appointment) =>
-          appointment.patientId === patientId &&
-          appointment.status === "COMPLETED"
-      )
-      .sort(
-        (a, b) =>
-          new Date(b.date).getTime() -
-          new Date(a.date).getTime()
+    const patient =
+      patients.find(
+        (p) => p.id === id
       );
 
-    return visits[0]?.date || null;
+    return fullName(
+      patient
+    );
+  };
+
+  const lastVisitDate = (
+    patientId: string
+  ) => {
+    const visits =
+      appointments
+        .filter(
+          (appointment) =>
+            appointment.patientId ===
+              patientId &&
+            appointment.status ===
+              "COMPLETED"
+        )
+        .sort(
+          (a, b) =>
+            new Date(
+              b.date
+            ).getTime() -
+            new Date(
+              a.date
+            ).getTime()
+        );
+
+    return (
+      visits[0]?.date ||
+      null
+    );
   };
 
   /* ==========================================================
@@ -1777,6 +2440,194 @@ Paracetamol 500mg — SOS`}
           border-left: 4px solid var(--p);
         }
 
+        /* ====================================================
+           SEARCHABLE PATIENT PICKER
+        ==================================================== */
+
+        .patient-picker {
+          position: relative;
+          width: 100%;
+        }
+
+        .patient-picker-control {
+          position: relative;
+          display: flex;
+          align-items: center;
+          width: 100%;
+        }
+
+        .patient-picker-control.open {
+          z-index: 1001;
+        }
+
+        .patient-picker-input {
+          width: 100%;
+          padding: 10px 70px 10px 11px;
+          min-height: 40px;
+          border: 1px solid #cbd5da;
+          border-radius: 7px;
+          background: #fff;
+          color: var(--text);
+          outline: none;
+        }
+
+        .patient-picker-input:focus {
+          border-color: var(--p);
+          box-shadow: 0 0 0 3px #176b8718;
+        }
+
+        .patient-picker-control.open
+          .patient-picker-input {
+          border-color: var(--p);
+          border-bottom-left-radius: 0;
+          border-bottom-right-radius: 0;
+        }
+
+        .patient-picker-clear {
+          position: absolute;
+          right: 30px;
+          top: 50%;
+          transform: translateY(-50%);
+          width: 24px;
+          height: 24px;
+          padding: 0;
+          margin: 0;
+          border-radius: 50%;
+          background: #e8eef1;
+          color: #43545c;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 18px;
+          line-height: 1;
+        }
+
+        .patient-picker-clear:hover {
+          background: #d9e2e6;
+        }
+
+        .patient-picker-arrow {
+          position: absolute;
+          right: 11px;
+          top: 50%;
+          transform: translateY(-50%);
+          pointer-events: none;
+          color: #687780;
+          font-size: 14px;
+          transition: transform 0.15s ease;
+        }
+
+        .patient-picker-arrow.up {
+          transform:
+            translateY(-50%)
+            rotate(180deg);
+        }
+
+        .patient-picker-menu {
+          position: absolute;
+          left: 0;
+          right: 0;
+          top: calc(100% - 1px);
+          z-index: 1000;
+          max-height: 360px;
+          overflow-y: auto;
+          background: #fff;
+          border: 1px solid var(--p);
+          border-top: 0;
+          border-radius: 0 0 8px 8px;
+          box-shadow:
+            0 8px 24px
+            rgba(0, 0, 0, 0.15);
+        }
+
+        .patient-picker-summary {
+          position: sticky;
+          top: 0;
+          z-index: 2;
+          padding: 8px 11px;
+          background: #f7fafb;
+          border-bottom: 1px solid var(--line);
+          color: var(--muted);
+          font-size: 11px;
+        }
+
+        .patient-picker-option {
+          width: 100%;
+          display: block;
+          text-align: left;
+          margin: 0;
+          padding: 10px 12px;
+          border-radius: 0;
+          border-bottom: 1px solid #edf1f3;
+          background: #fff;
+          color: var(--text);
+        }
+
+        .patient-picker-option:hover,
+        .patient-picker-option.highlighted {
+          background: #eef7fa;
+        }
+
+        .patient-picker-option.selected {
+          background: #e6f4f8;
+        }
+
+        .patient-picker-option-main {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+        }
+
+        .patient-picker-option-main strong {
+          font-size: 14px;
+          color: #17313c;
+        }
+
+        .patient-picker-option-main span {
+          flex-shrink: 0;
+          font-size: 11px;
+          font-weight: bold;
+          color: var(--p);
+          background: #eef7fa;
+          padding: 3px 6px;
+          border-radius: 5px;
+        }
+
+        .patient-picker-option-meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          margin-top: 4px;
+          color: var(--muted);
+          font-size: 11px;
+        }
+
+        .patient-picker-empty {
+          padding: 18px 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          color: var(--muted);
+        }
+
+        .patient-picker-empty strong {
+          color: var(--text);
+        }
+
+        .patient-picker-more {
+          padding: 9px 11px;
+          background: #fff9e8;
+          color: #795c00;
+          border-top: 1px solid #f1e1a7;
+          font-size: 11px;
+          text-align: center;
+        }
+
+        .patient-picker-required {
+          display: none;
+        }
+
         @media (max-width: 700px) {
           .admin-header {
             position: static;
@@ -1794,6 +2645,16 @@ Paracetamol 500mg — SOS`}
             display: block;
             margin-top: 3px;
           }
+
+          .patient-picker-menu {
+            max-height: 300px;
+          }
+
+          .patient-picker-option-main {
+            align-items: flex-start;
+            flex-direction: column;
+            gap: 5px;
+          }
         }
       `}</style>
 
@@ -1805,25 +2666,30 @@ Paracetamol 500mg — SOS`}
         <div
           style={{
             display: "flex",
-            justifyContent: "space-between",
+            justifyContent:
+              "space-between",
             alignItems: "center",
             gap: 15,
           }}
         >
           <div>
             <h1>
-              {clinic.name || "Jaswith Dental Care"}
+              {clinic.name ||
+                "Jaswith Dental Care"}
             </h1>
 
             <small>
-              Dr. J. Sailakshmi, MDS • Prosthodontist &
-              Implantologist • Clinic Management
+              Dr. J. Sailakshmi, MDS •
+              Prosthodontist &
+              Implantologist • Clinic
+              Management
             </small>
           </div>
 
           <form
-          //@ts-ignore
-          action={logout}>
+            //@ts-ignore
+            action={logout}
+          >
             <button
               type="submit"
               className="secondary"
@@ -1852,56 +2718,91 @@ Paracetamol 500mg — SOS`}
         ].map((item) => (
           <button
             key={item}
-            className={page === item ? "active" : ""}
-            onClick={() => setPage(item)}
+            className={
+              page === item
+                ? "active"
+                : ""
+            }
+            onClick={() =>
+              setPage(item)
+            }
           >
-            {item.charAt(0).toUpperCase() + item.slice(1)}
+            {item
+              .charAt(0)
+              .toUpperCase() +
+              item.slice(1)}
           </button>
         ))}
       </nav>
 
       <main>
-        {/* ================================================
+        {/* ==================================================
             DASHBOARD
-        ================================================ */}
+        ================================================== */}
 
         {page === "dashboard" && (
           <>
             <div className="statgrid">
               <div className="stat">
                 Patients
-                <b>{patients.length}</b>
+                <b>
+                  {patients.length}
+                </b>
               </div>
 
               <div className="stat">
                 Today's appointments
-                <b>{todayAppointments}</b>
+                <b>
+                  {todayAppointments}
+                </b>
               </div>
 
               <div className="stat">
                 Pending payments
-                <b>{money(pendingPayments)}</b>
+                <b>
+                  {money(
+                    pendingPayments
+                  )}
+                </b>
               </div>
 
               <div className="stat">
                 This month's revenue
-                <b>{money(monthlyRevenue)}</b>
+                <b>
+                  {money(
+                    monthlyRevenue
+                  )}
+                </b>
               </div>
             </div>
 
             <div className="card">
-              <h2>Quick actions</h2>
+              <h2>
+                Quick actions
+              </h2>
 
               <div className="actions">
-                <button onClick={() => newPatient()}>
+                <button
+                  onClick={() =>
+                    newPatient()
+                  }
+                >
                   + New patient
                 </button>
 
-                <button onClick={() => newAppointment()}>
+                <button
+                  onClick={() =>
+                    newAppointment()
+                  }
+                >
                   + Appointment
                 </button>
 
-                <button onClick={() => newBill()}>
+                <button
+                  onClick={() =>
+                    newBill()
+                  }
+                >
                   + Bill / Payment
                 </button>
               </div>
@@ -1909,280 +2810,396 @@ Paracetamol 500mg — SOS`}
 
             <div className="card">
               <div className="section-title">
-                <h2>Upcoming visits</h2>
+                <h2>
+                  Upcoming visits
+                </h2>
 
                 <span>
-                  Scheduled patient visit dates
+                  Scheduled patient
+                  visit dates
                 </span>
               </div>
 
               {upcomingDashboardAppointments.map(
-                (appointment) => (
+                (
+                  appointment
+                ) => (
                   <div
                     className="card dashboard-visit"
-                    key={appointment.id}
+                    key={
+                      appointment.id
+                    }
                   >
                     <div
                       style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "flex-start",
+                        display:
+                          "flex",
+                        justifyContent:
+                          "space-between",
+                        alignItems:
+                          "flex-start",
                         gap: 10,
-                        flexWrap: "wrap",
+                        flexWrap:
+                          "wrap",
                       }}
                     >
                       <div>
                         <span className="visit-date">
                           Visit Date:{" "}
-                          {formatDate(appointment.date)}
+                          {formatDate(
+                            appointment.date
+                          )}
                         </span>
 
                         {appointment.time && (
                           <span
                             className="muted"
-                            style={{ marginLeft: 8 }}
+                            style={{
+                              marginLeft: 8,
+                            }}
                           >
-                            {appointment.time}
+                            {
+                              appointment.time
+                            }
                           </span>
                         )}
                       </div>
 
                       <span
                         className={`badge ${
-                          appointment.status === "COMPLETED"
+                          appointment.status ===
+                          "COMPLETED"
                             ? "ok"
-                            : appointment.status === "CANCELLED"
+                            : appointment.status ===
+                              "CANCELLED"
                             ? "warn"
                             : ""
                         }`}
                       >
-                        {appointment.status}
+                        {
+                          appointment.status
+                        }
                       </span>
                     </div>
 
-                    <div style={{ marginTop: 9 }}>
+                    <div
+                      style={{
+                        marginTop: 9,
+                      }}
+                    >
                       <b>
-                        {patientName(appointment.patientId)}
+                        {patientName(
+                          appointment.patientId
+                        )}
                       </b>
 
                       {appointment.reason && (
                         <>
                           {" • "}
-                          {appointment.reason}
+                          {
+                            appointment.reason
+                          }
                         </>
                       )}
                     </div>
 
                     {appointment.treatment && (
                       <div className="muted">
-                        Treatment: {appointment.treatment}
+                        Treatment:{" "}
+                        {
+                          appointment.treatment
+                        }
                       </div>
                     )}
                   </div>
                 )
               )}
 
-              {upcomingDashboardAppointments.length === 0 && (
+              {upcomingDashboardAppointments.length ===
+                0 && (
                 <p className="muted">
-                  No upcoming visits.
+                  No upcoming
+                  visits.
                 </p>
               )}
             </div>
           </>
         )}
 
-        {/* ================================================
+        {/* ==================================================
             PATIENTS
-        ================================================ */}
+        ================================================== */}
 
-{page === "patients" && (
-  <>
-    <div className="card">
-      <div className="actions">
-        <button onClick={() => newPatient()}>
-          + New patient
-        </button>
-
-        <input
-          placeholder="Search name / phone / patient ID"
-          value={patientSearch}
-          onChange={(e) =>
-            setPatientSearch(e.target.value)
-          }
-          style={{
-            flex: 1,
-            minWidth: 220,
-          }}
-        />
-      </div>
-    </div>
-
-    <div className="card scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>Patient ID</th>
-            <th>Patient</th>
-            <th>Contact</th>
-            <th>Last visit</th>
-            <th>Clinical</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-
-        <tbody>
-          {filteredPatients.map((patient) => (
-            <tr key={patient.id}>
-              <td>
-                <b>{patient.patientNumber}</b>
-              </td>
-
-              <td>
-                <b>{fullName(patient)}</b>
-
-                <br />
-
-                <span className="muted">
-                  {patient.gender || "—"}
-
-                  {patient.age != null
-                    ? ` • ${patient.age} yrs`
-                    : ""}
-                </span>
-
-                <br />
-
-              </td>
-
-              <td>
-                {patient.phone}
-
-               
-
-                {patient.email && (
-                  <>
-                    <br />
-                    <span className="muted">
-                      {patient.email}
-                    </span>
-                  </>
-                )}
-              </td>
-
-              <td>
-                {formatDate(
-                  lastVisitDate(patient.id)
-                )}
-              </td>
-
-              <td>
-                {patient.diagnosis ? (
-                  <>
-                    <b>{patient.diagnosis}</b>
-
-                    {patient.followUpDate && (
-                      <>
-                        <br />
-                        <span className="muted">
-                          Follow-up:{" "}
-                          {formatDate(
-                            patient.followUpDate
-                          )}
-                        </span>
-                      </>
-                    )}
-                  </>
-                ) : (
-                  <span className="muted">
-                    No clinical entry
-                  </span>
-                )}
-              </td>
-
-              <td>
-                <button
-                  onClick={() => newPatient(patient)}
-                >
-                  Edit
-                </button>
-
-                <button
-                  onClick={() => newAppointment()}
-                >
-                  Appointment
-                </button>
-
-                <button
-                  className="danger"
-                  onClick={async () => {
-                    if (
-                      !confirm(
-                        "Delete this patient?"
-                      )
-                    ) {
-                      return;
-                    }
-
-                    const result =
-                      await deletePatient(
-                        patient.id
-                      );
-
-                    if (!result.success) {
-                      alert(
-                        result.error ||
-                          "Unable to delete patient"
-                      );
-                      return;
-                    }
-
-                    window.location.reload();
-                  }}
-                >
-                  Delete
-                </button>
-              </td>
-            </tr>
-          ))}
-
-          {filteredPatients.length === 0 && (
-            <tr>
-              <td
-                colSpan={6}
-                className="muted"
-              >
-                No patients
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-  </>
-)}
-
-        {/* ================================================
-            APPOINTMENTS
-        ================================================ */}
-
-        {page === "appointments" && (
+        {page === "patients" && (
           <>
             <div className="card">
               <div className="actions">
-                <button onClick={() => newAppointment()}>
+                <button
+                  onClick={() =>
+                    newPatient()
+                  }
+                >
+                  + New patient
+                </button>
+
+                <input
+                  placeholder="Search name / phone / patient ID"
+                  value={
+                    patientSearch
+                  }
+                  onChange={(e) =>
+                    setPatientSearch(
+                      e.target.value
+                    )
+                  }
+                  style={{
+                    flex: 1,
+                    minWidth: 220,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="card scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>
+                      Patient ID
+                    </th>
+
+                    <th>
+                      Patient
+                    </th>
+
+                    <th>
+                      Contact
+                    </th>
+
+                    <th>
+                      Last visit
+                    </th>
+
+                    <th>
+                      Clinical
+                    </th>
+
+                    <th>
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {filteredPatients.map(
+                    (
+                      patient
+                    ) => (
+                      <tr
+                        key={
+                          patient.id
+                        }
+                      >
+                        <td>
+                          <b>
+                            {
+                              patient.patientNumber
+                            }
+                          </b>
+                        </td>
+
+                        <td>
+                          <b>
+                            {fullName(
+                              patient
+                            )}
+                          </b>
+
+                          <br />
+
+                          <span className="muted">
+                            {patient.gender ||
+                              "—"}
+
+                            {patient.age !=
+                            null
+                              ? ` • ${patient.age} yrs`
+                              : ""}
+                          </span>
+                        </td>
+
+                        <td>
+                          {
+                            patient.phone
+                          }
+
+                          {patient.email && (
+                            <>
+                              <br />
+
+                              <span className="muted">
+                                {
+                                  patient.email
+                                }
+                              </span>
+                            </>
+                          )}
+                        </td>
+
+                        <td>
+                          {formatDate(
+                            lastVisitDate(
+                              patient.id
+                            )
+                          )}
+                        </td>
+
+                        <td>
+                          {patient.diagnosis ? (
+                            <>
+                              <b>
+                                {
+                                  patient.diagnosis
+                                }
+                              </b>
+
+                              {patient.followUpDate && (
+                                <>
+                                  <br />
+
+                                  <span className="muted">
+                                    Follow-up:{" "}
+                                    {formatDate(
+                                      patient.followUpDate
+                                    )}
+                                  </span>
+                                </>
+                              )}
+                            </>
+                          ) : (
+                            <span className="muted">
+                              No clinical
+                              entry
+                            </span>
+                          )}
+                        </td>
+
+                        <td>
+                          <button
+                            onClick={() =>
+                              newPatient(
+                                patient
+                              )
+                            }
+                          >
+                            Edit
+                          </button>
+
+                          <button
+                            onClick={() =>
+                              newAppointment()
+                            }
+                          >
+                            Appointment
+                          </button>
+
+                          <button
+                            className="danger"
+                            onClick={async () => {
+                              if (
+                                !confirm(
+                                  "Delete this patient?"
+                                )
+                              ) {
+                                return;
+                              }
+
+                              const result =
+                                await deletePatient(
+                                  patient.id
+                                );
+
+                              if (
+                                !result.success
+                              ) {
+                                alert(
+                                  result.error ||
+                                    "Unable to delete patient"
+                                );
+                                return;
+                              }
+
+                              window.location.reload();
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  )}
+
+                  {filteredPatients.length ===
+                    0 && (
+                    <tr>
+                      <td
+                        colSpan={
+                          6
+                        }
+                        className="muted"
+                      >
+                        No patients
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {/* ==================================================
+            APPOINTMENTS
+        ================================================== */}
+
+        {page ===
+          "appointments" && (
+          <>
+            <div className="card">
+              <div className="actions">
+                <button
+                  onClick={() =>
+                    newAppointment()
+                  }
+                >
                   + New appointment
                 </button>
 
                 <select
-                  value={appointmentFilter}
+                  value={
+                    appointmentFilter
+                  }
                   onChange={(e) =>
-                    setAppointmentFilter(e.target.value)
+                    setAppointmentFilter(
+                      e.target.value
+                    )
                   }
                 >
-                  <option value="all">All</option>
-                  <option value="today">Today</option>
-                  <option value="upcoming">Upcoming</option>
-                  <option value="completed">Completed</option>
+                  <option value="all">
+                    All
+                  </option>
+
+                  <option value="today">
+                    Today
+                  </option>
+
+                  <option value="upcoming">
+                    Upcoming
+                  </option>
+
+                  <option value="completed">
+                    Completed
+                  </option>
                 </select>
               </div>
             </div>
@@ -2191,200 +3208,117 @@ Paracetamol 500mg — SOS`}
               <table>
                 <thead>
                   <tr>
-                    <th>Visit date/time</th>
-                    <th>Patient</th>
-                    <th>Reason</th>
-                    <th>Status</th>
-                    <th>Actions</th>
+                    <th>
+                      Visit
+                      date/time
+                    </th>
+
+                    <th>
+                      Patient
+                    </th>
+
+                    <th>
+                      Reason
+                    </th>
+
+                    <th>
+                      Status
+                    </th>
+
+                    <th>
+                      Actions
+                    </th>
                   </tr>
                 </thead>
 
                 <tbody>
-                  {filteredAppointments.map((appointment) => (
-                    <tr key={appointment.id}>
-                      <td>
-                        <span className="visit-date">
-                          {formatDate(appointment.date)}
-                        </span>
-
-                        {appointment.time && (
-                          <div className="muted">
-                            {appointment.time}
-                          </div>
-                        )}
-                      </td>
-
-                      <td>
-                        {patientName(appointment.patientId)}
-                      </td>
-
-                      <td>{appointment.reason}</td>
-
-                      <td>
-                        <span
-                          className={`badge ${
-                            appointment.status === "COMPLETED"
-                              ? "ok"
-                              : appointment.status === "CANCELLED"
-                              ? "warn"
-                              : ""
-                          }`}
-                        >
-                          {appointment.status}
-                        </span>
-                      </td>
-
-                      <td>
-                        <button
-                          onClick={() =>
-                            newAppointment(appointment)
-                          }
-                        >
-                          Edit
-                        </button>
-
-                        <button
-                          className="danger"
-                          onClick={async () => {
-                            if (
-                              !confirm(
-                                "Delete appointment?"
-                              )
-                            )
-                              return;
-
-                            const result =
-                              await deleteAppointment(
-                                appointment.id
-                              );
-
-                            if (!result.success) {
-                              alert(
-                                result.error ||
-                                  "Unable to delete appointment"
-                              );
-                              return;
-                            }
-
-                            window.location.reload();
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-
-                  {filteredAppointments.length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="muted">
-                        No appointments found.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-
-        {/* ================================================
-            BILLING
-        ================================================ */}
-
-        {page === "billing" && (
-          <>
-            <div className="card">
-              <div className="actions">
-                <button onClick={() => newBill()}>
-                  + New bill
-                </button>
-
-                <input
-                  placeholder="Search patient"
-                  value={billSearch}
-                  onChange={(e) =>
-                    setBillSearch(e.target.value)
-                  }
-                  style={{ flex: 1, minWidth: 220 }}
-                />
-              </div>
-            </div>
-
-            <div className="card scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Bill #</th>
-                    <th>Patient</th>
-                    <th>Items</th>
-                    <th>Total</th>
-                    <th>Paid</th>
-                    <th>Balance</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {filteredInvoices.map((invoice) => {
-                    const paid = invoice.payments.reduce(
-                      (sum, payment) =>
-                        sum + Number(payment.amount),
-                      0
-                    );
-
-                    return (
-                      <tr key={invoice.id}>
+                  {filteredAppointments.map(
+                    (
+                      appointment
+                    ) => (
+                      <tr
+                        key={
+                          appointment.id
+                        }
+                      >
                         <td>
-                          {formatDate(invoice.invoiceDate)}
-                        </td>
+                          <span className="visit-date">
+                            {formatDate(
+                              appointment.date
+                            )}
+                          </span>
 
-                        <td>{invoice.invoiceNumber}</td>
-
-                        <td>
-                          {patientName(invoice.patientId)}
-                        </td>
-
-                        <td>
-                          {invoice.items.map((item) => (
-                            <div key={item.description}>
-                              {item.description} —{" "}
-                              {money(item.amount)}
+                          {appointment.time && (
+                            <div className="muted">
+                              {
+                                appointment.time
+                              }
                             </div>
-                          ))}
-                        </td>
-
-                        <td>{money(invoice.total)}</td>
-
-                        <td>{money(paid)}</td>
-
-                        <td>
-                          {money(
-                            Number(invoice.total) - paid
                           )}
                         </td>
 
                         <td>
-                          <button
-                            onClick={async () => {
-                              const amount = prompt(
-                                "Payment amount"
-                              );
+                          {patientName(
+                            appointment.patientId
+                          )}
+                        </td>
 
-                              if (!amount) return;
+                        <td>
+                          {
+                            appointment.reason
+                          }
+                        </td>
+
+                        <td>
+                          <span
+                            className={`badge ${
+                              appointment.status ===
+                              "COMPLETED"
+                                ? "ok"
+                                : appointment.status ===
+                                  "CANCELLED"
+                                ? "warn"
+                                : ""
+                            }`}
+                          >
+                            {
+                              appointment.status
+                            }
+                          </span>
+                        </td>
+
+                        <td>
+                          <button
+                            onClick={() =>
+                              newAppointment(
+                                appointment
+                              )
+                            }
+                          >
+                            Edit
+                          </button>
+
+                          <button
+                            className="danger"
+                            onClick={async () => {
+                              if (
+                                !confirm(
+                                  "Delete appointment?"
+                                )
+                              )
+                                return;
 
                               const result =
-                                await addPayment({
-                                  invoiceId: invoice.id,
-                                  amount,
-                                  method: "CASH",
-                                });
+                                await deleteAppointment(
+                                  appointment.id
+                                );
 
-                              if (!result.success) {
+                              if (
+                                !result.success
+                              ) {
                                 alert(
                                   result.error ||
-                                    "Unable to add payment"
+                                    "Unable to delete appointment"
                                 );
                                 return;
                               }
@@ -2392,66 +3326,24 @@ Paracetamol 500mg — SOS`}
                               window.location.reload();
                             }}
                           >
-                            Payment
+                            Delete
                           </button>
-
-                          <button
-  onClick={async () => {
-    try {
-      const res = await fetch(
-        `/api/invoices/${invoice.id}/pdf`
-      );
-
-      if (!res.ok) {
-        throw new Error("Failed to generate PDF");
-      }
-
-      const blob = await res.blob();
-
-      const url = window.URL.createObjectURL(blob);
-
-      const a = document.createElement("a");
-      a.href = url;
-
-      // Get filename from API response if provided
-      const disposition = res.headers.get(
-        "Content-Disposition"
-      );
-
-      const filename =
-        disposition?.match(
-          /filename="?([^"]+)"?/
-        )?.[1] ||
-        `invoice-${invoice.invoiceNumber}.pdf`;
-
-      a.download = filename;
-
-      document.body.appendChild(a);
-      a.click();
-
-      a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error(
-        "PDF download failed:",
-        error
-      );
-
-      alert("Failed to download invoice PDF");
-    }
-  }}
->
-  Download PDF
-</button>
                         </td>
                       </tr>
-                    );
-                  })}
+                    )
+                  )}
 
-                  {filteredInvoices.length === 0 && (
+                  {filteredAppointments.length ===
+                    0 && (
                     <tr>
-                      <td colSpan={8} className="muted">
-                        No bills found.
+                      <td
+                        colSpan={
+                          5
+                        }
+                        className="muted"
+                      >
+                        No appointments
+                        found.
                       </td>
                     </tr>
                   )}
@@ -2461,25 +3353,36 @@ Paracetamol 500mg — SOS`}
           </>
         )}
 
-        {/* ================================================
-            PRESCRIPTIONS
-        ================================================ */}
+        {/* ==================================================
+            BILLING
+        ================================================== */}
 
-        {page === "prescriptions" && (
+        {page === "billing" && (
           <>
             <div className="card">
               <div className="actions">
-                <button onClick={() => newPrescription()}>
-                  + Prescription
+                <button
+                  onClick={() =>
+                    newBill()
+                  }
+                >
+                  + New bill
                 </button>
 
                 <input
                   placeholder="Search patient"
-                  value={rxSearch}
-                  onChange={(e) =>
-                    setRxSearch(e.target.value)
+                  value={
+                    billSearch
                   }
-                  style={{ flex: 1, minWidth: 220 }}
+                  onChange={(e) =>
+                    setBillSearch(
+                      e.target.value
+                    )
+                  }
+                  style={{
+                    flex: 1,
+                    minWidth: 220,
+                  }}
                 />
               </div>
             </div>
@@ -2488,52 +3391,255 @@ Paracetamol 500mg — SOS`}
               <table>
                 <thead>
                   <tr>
-                    <th>Date</th>
-                    <th>Patient</th>
-                    <th>Medicines / instructions</th>
-                    <th>Actions</th>
+                    <th>
+                      Date
+                    </th>
+
+                    <th>
+                      Bill #
+                    </th>
+
+                    <th>
+                      Patient
+                    </th>
+
+                    <th>
+                      Items
+                    </th>
+
+                    <th>
+                      Total
+                    </th>
+
+                    <th>
+                      Paid
+                    </th>
+
+                    <th>
+                      Balance
+                    </th>
+
+                    <th>
+                      Actions
+                    </th>
                   </tr>
                 </thead>
 
                 <tbody>
-                  {filteredRx.map((rx) => (
-                    <tr key={rx.id}>
-                      <td>
-                        {formatDate(rx.prescriptionDate)}
-                      </td>
+                  {filteredInvoices.map(
+                    (
+                      invoice
+                    ) => {
+                      const paid =
+                        invoice.payments.reduce(
+                          (
+                            sum,
+                            payment
+                          ) =>
+                            sum +
+                            Number(
+                              payment.amount
+                            ),
+                          0
+                        );
 
-                      <td>{patientName(rx.patientId)}</td>
-
-                      <td>
-                        {rx.items.map((item) => (
-                          <div key={item.medicine}>
-                            {item.medicine}
-                            <br />
-                            <span className="muted">
-                              {item.instructions}
-                            </span>
-                          </div>
-                        ))}
-                      </td>
-
-                      <td>
-                        <button
-                          onClick={() =>
-                            alert(
-                              "Prescription editing can be added next."
-                            )
+                      return (
+                        <tr
+                          key={
+                            invoice.id
                           }
                         >
-                          Edit
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                          <td>
+                            {formatDate(
+                              invoice.invoiceDate
+                            )}
+                          </td>
 
-                  {filteredRx.length === 0 && (
+                          <td>
+                            {
+                              invoice.invoiceNumber
+                            }
+                          </td>
+
+                          <td>
+                            {patientName(
+                              invoice.patientId
+                            )}
+                          </td>
+
+                          <td>
+                            {invoice.items.map(
+                              (
+                                item
+                              ) => (
+                                <div
+                                  key={
+                                    item.description
+                                  }
+                                >
+                                  {
+                                    item.description
+                                  }{" "}
+                                  —{" "}
+                                  {money(
+                                    item.amount
+                                  )}
+                                </div>
+                              )
+                            )}
+                          </td>
+
+                          <td>
+                            {money(
+                              invoice.total
+                            )}
+                          </td>
+
+                          <td>
+                            {money(
+                              paid
+                            )}
+                          </td>
+
+                          <td>
+                            {money(
+                              Number(
+                                invoice.total
+                              ) -
+                                paid
+                            )}
+                          </td>
+
+                          <td>
+                            <button
+                              onClick={async () => {
+                                const amount =
+                                  prompt(
+                                    "Payment amount"
+                                  );
+
+                                if (
+                                  !amount
+                                )
+                                  return;
+
+                                const result =
+                                  await addPayment(
+                                    {
+                                      invoiceId:
+                                        invoice.id,
+                                      amount,
+                                      method:
+                                        "CASH",
+                                    }
+                                  );
+
+                                if (
+                                  !result.success
+                                ) {
+                                  alert(
+                                    result.error ||
+                                      "Unable to add payment"
+                                  );
+                                  return;
+                                }
+
+                                window.location.reload();
+                              }}
+                            >
+                              Payment
+                            </button>
+
+                            <button
+                              onClick={async () => {
+                                try {
+                                  const res =
+                                    await fetch(
+                                      `/api/invoices/${invoice.id}/pdf`
+                                    );
+
+                                  if (
+                                    !res.ok
+                                  ) {
+                                    throw new Error(
+                                      "Failed to generate PDF"
+                                    );
+                                  }
+
+                                  const blob =
+                                    await res.blob();
+
+                                  const url =
+                                    window.URL.createObjectURL(
+                                      blob
+                                    );
+
+                                  const a =
+                                    document.createElement(
+                                      "a"
+                                    );
+
+                                  a.href =
+                                    url;
+
+                                  const disposition =
+                                    res.headers.get(
+                                      "Content-Disposition"
+                                    );
+
+                                  const filename =
+                                    disposition?.match(
+                                      /filename="?([^"]+)"?/
+                                    )?.[1] ||
+                                    `invoice-${invoice.invoiceNumber}.pdf`;
+
+                                  a.download =
+                                    filename;
+
+                                  document.body.appendChild(
+                                    a
+                                  );
+
+                                  a.click();
+
+                                  a.remove();
+
+                                  window.URL.revokeObjectURL(
+                                    url
+                                  );
+                                } catch (
+                                  error
+                                ) {
+                                  console.error(
+                                    "PDF download failed:",
+                                    error
+                                  );
+
+                                  alert(
+                                    "Failed to download invoice PDF"
+                                  );
+                                }
+                              }}
+                            >
+                              Download PDF
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    }
+                  )}
+
+                  {filteredInvoices.length ===
+                    0 && (
                     <tr>
-                      <td colSpan={4} className="muted">
-                        No prescriptions found.
+                      <td
+                        colSpan={
+                          8
+                        }
+                        className="muted"
+                      >
+                        No bills
+                        found.
                       </td>
                     </tr>
                   )}
@@ -2543,74 +3649,264 @@ Paracetamol 500mg — SOS`}
           </>
         )}
 
-        {/* ================================================
+        {/* ==================================================
+            PRESCRIPTIONS
+        ================================================== */}
+
+        {page ===
+          "prescriptions" && (
+          <>
+            <div className="card">
+              <div className="actions">
+                <button
+                  onClick={() =>
+                    newPrescription()
+                  }
+                >
+                  + Prescription
+                </button>
+
+                <input
+                  placeholder="Search patient"
+                  value={
+                    rxSearch
+                  }
+                  onChange={(e) =>
+                    setRxSearch(
+                      e.target.value
+                    )
+                  }
+                  style={{
+                    flex: 1,
+                    minWidth: 220,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="card scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>
+                      Date
+                    </th>
+
+                    <th>
+                      Patient
+                    </th>
+
+                    <th>
+                      Medicines /
+                      instructions
+                    </th>
+
+                    <th>
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {filteredRx.map(
+                    (rx) => (
+                      <tr
+                        key={
+                          rx.id
+                        }
+                      >
+                        <td>
+                          {formatDate(
+                            rx.prescriptionDate
+                          )}
+                        </td>
+
+                        <td>
+                          {patientName(
+                            rx.patientId
+                          )}
+                        </td>
+
+                        <td>
+                          {rx.items.map(
+                            (
+                              item
+                            ) => (
+                              <div
+                                key={
+                                  item.medicine
+                                }
+                              >
+                                {
+                                  item.medicine
+                                }
+
+                                <br />
+
+                                <span className="muted">
+                                  {
+                                    item.instructions
+                                  }
+                                </span>
+                              </div>
+                            )
+                          )}
+                        </td>
+
+                        <td>
+                          <button
+                            onClick={() =>
+                              alert(
+                                "Prescription editing can be added next."
+                              )
+                            }
+                          >
+                            Edit
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  )}
+
+                  {filteredRx.length ===
+                    0 && (
+                    <tr>
+                      <td
+                        colSpan={
+                          4
+                        }
+                        className="muted"
+                      >
+                        No prescriptions
+                        found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {/* ==================================================
             FILES
-        ================================================ */}
+        ================================================== */}
 
         {page === "files" && (
           <>
             <div className="card">
-              <h2>Patient documents</h2>
+              <h2>
+                Patient documents
+              </h2>
 
               <p className="muted">
-                Attach X-rays, photographs, scans, reports
-                and other patient documents. Maximum 5 MB
-                per image.
+                Attach X-rays,
+                photographs, scans,
+                reports and other
+                patient documents.
+                Maximum 5 MB per
+                image.
               </p>
 
               <form
-                action={async (formData) => {
+                action={async (
+                  formData
+                ) => {
                   try {
-                    const file = formData.get("file");
+                    const file =
+                      formData.get(
+                        "file"
+                      );
 
                     if (
-                      !(file instanceof File) ||
-                      file.size === 0
+                      !(
+                        file instanceof
+                        File
+                      ) ||
+                      file.size ===
+                        0
                     ) {
                       throw new Error(
                         "Please select an image."
                       );
                     }
 
-                    setUploadingFile(true);
-
-                    const url = await uploadImage(
-                      file,
-                      "dental/attachments"
+                    setUploadingFile(
+                      true
                     );
 
-                    const patientId = String(
-                      formData.get("patientId") || ""
-                    );
+                    const url =
+                      await uploadImage(
+                        file,
+                        "dental/attachments"
+                      );
 
-                    const result = await saveAttachment({
-                      patientId,
-                      name: file.name,
-                      mimeType: file.type,
-                      size: file.size,
-                      url,
-                    });
+                    const patientId =
+                      String(
+                        formData.get(
+                          "patientId"
+                        ) || ""
+                      );
 
-                    if (!result.success) {
-                      throw new Error(result.error);
+                    if (!patientId) {
+                      throw new Error(
+                        "Please select a patient."
+                      );
+                    }
+
+                    const result =
+                      await saveAttachment(
+                        {
+                          patientId,
+                          name: file.name,
+                          mimeType:
+                            file.type,
+                          size: file.size,
+                          url,
+                        }
+                      );
+
+                    if (
+                      !result.success
+                    ) {
+                      throw new Error(
+                        result.error
+                      );
                     }
 
                     window.location.reload();
-                  } catch (error) {
+                  } catch (
+                    error
+                  ) {
                     alert(
-                      error instanceof Error
+                      error instanceof
+                        Error
                         ? error.message
                         : "Unable to upload file"
                     );
                   } finally {
-                    setUploadingFile(false);
+                    setUploadingFile(
+                      false
+                    );
                   }
                 }}
               >
                 <div className="actions">
-                  <select name="patientId" required>
-                    {patientOptions()}
-                  </select>
+                  <div
+                    style={{
+                      flex: 1,
+                      minWidth: 280,
+                    }}
+                  >
+                    <label>
+                      Patient *
+                    </label>
+
+                    {patientPicker(
+                      "",
+                      true
+                    )}
+                  </div>
 
                   <input
                     name="file"
@@ -2622,7 +3918,9 @@ Paracetamol 500mg — SOS`}
 
                   <button
                     type="submit"
-                    disabled={uploadingFile}
+                    disabled={
+                      uploadingFile
+                    }
                   >
                     {uploadingFile
                       ? "Uploading..."
@@ -2632,7 +3930,8 @@ Paracetamol 500mg — SOS`}
 
                 {uploadingFile && (
                   <p className="muted">
-                    Uploading image to secure storage...
+                    Uploading image to
+                    secure storage...
                   </p>
                 )}
               </form>
@@ -2642,80 +3941,128 @@ Paracetamol 500mg — SOS`}
               <table>
                 <thead>
                   <tr>
-                    <th>Patient</th>
-                    <th>File</th>
-                    <th>Added</th>
-                    <th>Action</th>
+                    <th>
+                      Patient
+                    </th>
+
+                    <th>
+                      File
+                    </th>
+
+                    <th>
+                      Added
+                    </th>
+
+                    <th>
+                      Action
+                    </th>
                   </tr>
                 </thead>
 
                 <tbody>
-                  {attachments.map((file) => (
-                    <tr key={file.id}>
-                      <td>{patientName(file.patientId)}</td>
+                  {attachments.map(
+                    (file) => (
+                      <tr
+                        key={
+                          file.id
+                        }
+                      >
+                        <td>
+                          {patientName(
+                            file.patientId
+                          )}
+                        </td>
 
-                      <td>
-                        <div>{file.name}</div>
-                        <span className="muted">
-                          {file.mimeType} •{" "}
-                          {(
-                            file.size /
-                            1024 /
-                            1024
-                          ).toFixed(2)}{" "}
-                          MB
-                        </span>
-                      </td>
-
-                      <td>{formatDate(file.createdAt)}</td>
-
-                      <td>
-                        {file.url && (
-                          <a
-                            href={file.url}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            <button type="button">
-                              Open
-                            </button>
-                          </a>
-                        )}
-
-                        <button
-                          className="danger"
-                          onClick={async () => {
-                            if (
-                              !confirm("Delete file?")
-                            )
-                              return;
-
-                            const result =
-                              await deleteAttachment(
-                                file.id
-                              );
-
-                            if (!result.success) {
-                              alert(
-                                result.error ||
-                                  "Unable to delete file"
-                              );
-                              return;
+                        <td>
+                          <div>
+                            {
+                              file.name
                             }
+                          </div>
 
-                            window.location.reload();
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                          <span className="muted">
+                            {
+                              file.mimeType
+                            }{" "}
+                            •{" "}
+                            {(
+                              file.size /
+                              1024 /
+                              1024
+                            ).toFixed(
+                              2
+                            )}{" "}
+                            MB
+                          </span>
+                        </td>
 
-                  {attachments.length === 0 && (
+                        <td>
+                          {formatDate(
+                            file.createdAt
+                          )}
+                        </td>
+
+                        <td>
+                          {file.url && (
+                            <a
+                              href={
+                                file.url
+                              }
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <button type="button">
+                                Open
+                              </button>
+                            </a>
+                          )}
+
+                          <button
+                            className="danger"
+                            onClick={async () => {
+                              if (
+                                !confirm(
+                                  "Delete file?"
+                                )
+                              )
+                                return;
+
+                              const result =
+                                await deleteAttachment(
+                                  file.id
+                                );
+
+                              if (
+                                !result.success
+                              ) {
+                                alert(
+                                  result.error ||
+                                    "Unable to delete file"
+                                );
+                                return;
+                              }
+
+                              window.location.reload();
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  )}
+
+                  {attachments.length ===
+                    0 && (
                     <tr>
-                      <td colSpan={4} className="muted">
-                        No files uploaded yet.
+                      <td
+                        colSpan={
+                          4
+                        }
+                        className="muted"
+                      >
+                        No files
+                        uploaded yet.
                       </td>
                     </tr>
                   )}
@@ -2725,19 +4072,25 @@ Paracetamol 500mg — SOS`}
           </>
         )}
 
-        {/* ================================================
+        {/* ==================================================
             REPORTS
-        ================================================ */}
+        ================================================== */}
 
         {page === "reports" && (
           <>
             <div className="card">
-              <h2>Clinic reports</h2>
+              <h2>
+                Clinic reports
+              </h2>
 
               <div className="statgrid">
                 <div className="stat">
                   Total patients
-                  <b>{patients.length}</b>
+                  <b>
+                    {
+                      patients.length
+                    }
+                  </b>
                 </div>
 
                 <div className="stat">
@@ -2745,7 +4098,9 @@ Paracetamol 500mg — SOS`}
                   <b>
                     {
                       appointments.filter(
-                        (a) => a.status === "COMPLETED"
+                        (a) =>
+                          a.status ===
+                          "COMPLETED"
                       ).length
                     }
                   </b>
@@ -2756,8 +4111,14 @@ Paracetamol 500mg — SOS`}
                   <b>
                     {money(
                       invoices.reduce(
-                        (sum, invoice) =>
-                          sum + Number(invoice.total),
+                        (
+                          sum,
+                          invoice
+                        ) =>
+                          sum +
+                          Number(
+                            invoice.total
+                          ),
                         0
                       )
                     )}
@@ -2769,11 +4130,20 @@ Paracetamol 500mg — SOS`}
                   <b>
                     {money(
                       invoices.reduce(
-                        (sum, invoice) =>
+                        (
+                          sum,
+                          invoice
+                        ) =>
                           sum +
                           invoice.payments.reduce(
-                            (pSum, payment) =>
-                              pSum + Number(payment.amount),
+                            (
+                              pSum,
+                              payment
+                            ) =>
+                              pSum +
+                              Number(
+                                payment.amount
+                              ),
                             0
                           ),
                         0
@@ -2784,91 +4154,154 @@ Paracetamol 500mg — SOS`}
 
                 <div className="stat">
                   Outstanding
-                  <b>{money(pendingPayments)}</b>
+                  <b>
+                    {money(
+                      pendingPayments
+                    )}
+                  </b>
                 </div>
               </div>
             </div>
 
             <div className="card">
-              <h3>Patient treatment plans</h3>
+              <h3>
+                Patient treatment
+                plans
+              </h3>
 
               {(() => {
-                const treatmentMap: Record<string, number> = {};
+                const treatmentMap: Record<
+                  string,
+                  number
+                > = {};
 
-                patients.forEach((patient) => {
-                  const plan = patient.treatmentPlan?.trim();
+                patients.forEach(
+                  (patient) => {
+                    const plan =
+                      patient.treatmentPlan?.trim();
 
-                  if (!plan) return;
+                    if (!plan)
+                      return;
 
-                  treatmentMap[plan] =
-                    (treatmentMap[plan] || 0) + 1;
-                });
+                    treatmentMap[
+                      plan
+                    ] =
+                      (treatmentMap[
+                        plan
+                      ] || 0) + 1;
+                  }
+                );
 
-                const entries = Object.entries(
-                  treatmentMap
-                ).sort((a, b) => b[1] - a[1]);
+                const entries =
+                  Object.entries(
+                    treatmentMap
+                  ).sort(
+                    (a, b) =>
+                      b[1] -
+                      a[1]
+                  );
 
-                if (entries.length === 0) {
+                if (
+                  entries.length ===
+                  0
+                ) {
                   return (
                     <p className="muted">
-                      No treatment plans recorded.
+                      No treatment
+                      plans recorded.
                     </p>
                   );
                 }
 
-                return entries.map(([name, count]) => (
-                  <div className="card" key={name}>
-                    <b>{name}</b> — {count}
-                  </div>
-                ));
+                return entries.map(
+                  ([
+                    name,
+                    count,
+                  ]) => (
+                    <div
+                      className="card"
+                      key={name}
+                    >
+                      <b>
+                        {name}
+                      </b>{" "}
+                      — {count}
+                    </div>
+                  )
+                );
               })()}
             </div>
           </>
         )}
 
-        {/* ================================================
+        {/* ==================================================
             BACKUP
-        ================================================ */}
+        ================================================== */}
 
         {page === "backup" && (
           <>
             <div className="card">
-              <h2>Backup & restore</h2>
+              <h2>
+                Backup & restore
+              </h2>
 
               <p>
-                Export the clinic data from the database.
-                This version exports the currently loaded
+                Export the clinic
+                data from the
+                database. This
+                version exports the
+                currently loaded
                 records as JSON.
               </p>
 
               <button
                 onClick={() => {
-                  const data = {
-                    clinic,
-                    patients,
-                    appointments,
-                    doctors,
-                    treatments,
-                    testimonials,
-                    invoices,
-                    prescriptions,
-                    attachments,
-                  };
+                  const data =
+                    {
+                      clinic,
+                      patients,
+                      appointments,
+                      doctors,
+                      treatments,
+                      testimonials,
+                      invoices,
+                      prescriptions,
+                      attachments,
+                    };
 
-                  const blob = new Blob(
-                    [JSON.stringify(data, null, 2)],
-                    { type: "application/json" }
-                  );
+                  const blob =
+                    new Blob(
+                      [
+                        JSON.stringify(
+                          data,
+                          null,
+                          2
+                        ),
+                      ],
+                      {
+                        type: "application/json",
+                      }
+                    );
 
-                  const url = URL.createObjectURL(blob);
+                  const url =
+                    URL.createObjectURL(
+                      blob
+                    );
 
-                  const a = document.createElement("a");
+                  const a =
+                    document.createElement(
+                      "a"
+                    );
 
                   a.href = url;
+
                   a.download = `jaswith-dental-care-backup-${today()}.json`;
+
                   a.click();
 
-                  URL.revokeObjectURL(url);
+                  URL.revokeObjectURL(
+                    url
+                  );
                 }}
               >
                 Download backup
@@ -2876,29 +4309,39 @@ Paracetamol 500mg — SOS`}
             </div>
 
             <div className="card">
-              <h3>Privacy notice</h3>
+              <h3>
+                Privacy notice
+              </h3>
 
               <p className="muted">
-                Patient information is sensitive clinical
-                data. Use authenticated accounts, encrypted
-                storage, backups, role-based access, audit
-                logging and secure hosting before production
-                deployment.
+                Patient information
+                is sensitive clinical
+                data. Use authenticated
+                accounts, encrypted
+                storage, backups,
+                role-based access,
+                audit logging and
+                secure hosting before
+                production deployment.
               </p>
             </div>
           </>
         )}
 
-        {/* ================================================
+        {/* ==================================================
             SETTINGS
-        ================================================ */}
+        ================================================== */}
 
         {page === "settings" && (
           <Setting
             clinic={clinic}
             doctors={doctors}
-            testimonials={testimonials}
-            treatments={treatments}
+            testimonials={
+              testimonials
+            }
+            treatments={
+              treatments
+            }
           />
         )}
       </main>
@@ -2910,8 +4353,13 @@ Paracetamol 500mg — SOS`}
       {modal && (
         <div
           className="modal"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
+          onMouseDown={(
+            event
+          ) => {
+            if (
+              event.target ===
+              event.currentTarget
+            ) {
               closeModal();
             }
           }}
@@ -2919,14 +4367,21 @@ Paracetamol 500mg — SOS`}
           <div className="modalbox">
             <div
               className="actions"
-              style={{ justifyContent: "space-between" }}
+              style={{
+                justifyContent:
+                  "space-between",
+              }}
             >
-              <h2>{modal.title}</h2>
+              <h2>
+                {modal.title}
+              </h2>
 
               <button
                 type="button"
                 className="secondary"
-                onClick={closeModal}
+                onClick={
+                  closeModal
+                }
               >
                 Close
               </button>
