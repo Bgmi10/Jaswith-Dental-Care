@@ -3583,212 +3583,101 @@ async function generateInvoiceNumber(
    SAVE BILL
 ============================================================ */
 
-export async function saveBill(
-  data: Record<string, unknown>
-) {
+export async function saveBill(data: Record<string, unknown>) {
   try {
-    const id =
-      str(data.id);
+    const id = str(data.id);
 
-    const clinicId =
-      requiredStr(
-        data.clinicId,
-        "Clinic"
-      );
+    const clinicId = requiredStr(data.clinicId, "Clinic");
 
-    const patientId =
-      requiredStr(
-        data.patientId,
-        "Patient"
-      );
+    const patientId = requiredStr(data.patientId, "Patient");
 
-    const items =
-      Array.isArray(data.items)
-        ? data.items
-        : [];
+    const items = Array.isArray(data.items) ? data.items : [];
 
-    const itemData =
-      items.map(
-        (item: any) => {
-          const quantity =
-            int(item.quantity) ??
-            1;
+    const itemData = items.map((item: any) => {
+      const quantity = int(item.quantity) ?? 1;
 
-          const unitPrice =
-            decimal(
-              item.unitPrice
-            ) ??
-            new Prisma.Decimal(0);
+      const unitPrice = decimal(item.unitPrice) ?? new Prisma.Decimal(0);
 
-          const amount =
-            decimal(
-              item.amount
-            ) ??
-            unitPrice.mul(
-              quantity
-            );
+      const amount = decimal(item.amount) ?? unitPrice.mul(quantity);
 
-          return {
-            treatmentId:
-              str(
-                item.treatmentId
-              ),
+      return {
+        treatmentId: str(item.treatmentId),
 
-            treatmentRecordId:
-              str(
-                item.treatmentRecordId
-              ),
+        treatmentRecordId: str(item.treatmentRecordId),
 
-            description:
-              requiredStr(
-                item.description,
-                "Invoice item description"
-              ),
+        description: requiredStr(
+          item.description,
+          "Invoice item description"
+        ),
 
-            quantity,
+        quantity,
 
-            unitPrice,
+        unitPrice,
 
-            amount,
-          };
-        }
-      );
+        amount,
+      };
+    });
 
     const subtotal =
       decimal(data.subtotal) ??
       itemData.reduce(
-        (
-          total,
-          item
-        ) =>
-          total.add(
-            item.amount
-          ),
+        (total, item) => total.add(item.amount),
         new Prisma.Decimal(0)
       );
 
-    const discount =
-      decimalZero(
-        data.discount
-      );
+    const discount = decimalZero(data.discount);
 
-    const tax =
-      decimalZero(
-        data.tax
-      );
+    const tax = decimalZero(data.tax);
 
-    const total =
-      decimal(data.total) ??
-      subtotal
-        .sub(discount)
-        .add(tax);
+    const total = decimal(data.total) ?? subtotal.sub(discount).add(tax);
 
-    const status =
-      (str(data.status) as any) ??
-      "UNPAID";
+    const suppliedStatus = str(data.status) as any;
+
+    const suppliedNumber = str(data.invoiceNumber);
 
     let invoice;
 
     if (id) {
-      invoice =
-        await prisma.$transaction(
-          async (tx) => {
-            await tx.invoiceItem.deleteMany(
-              {
-                where: {
-                  invoiceId:
-                    id,
-                },
-              }
-            );
+      /* ======================================================
+         UPDATE EXISTING BILL
+      ====================================================== */
 
-            return tx.invoice.update({
-              where: {
-                id,
-              },
+      invoice = await prisma.$transaction(async (tx) => {
+        await tx.invoiceItem.deleteMany({
+          where: {
+            invoiceId: id,
+          },
+        });
 
-              data: {
-                clinicId,
-                patientId,
+        return tx.invoice.update({
+          where: {
+            id,
+          },
 
-                status,
-
-                subtotal,
-                discount,
-                tax,
-                total,
-
-                notes:
-                  str(data.notes),
-
-                invoiceDate:
-                  date(
-                    data.invoiceDate
-                  ) ??
-                  new Date(),
-
-                dueDate:
-                  date(
-                    data.dueDate
-                  ),
-
-                items: {
-                  create:
-                    itemData,
-                },
-              },
-
-              include: {
-                items: true,
-                payments: true,
-              },
-            });
-          }
-        );
-    } else {
-      const suppliedNumber =
-        str(
-          data.invoiceNumber
-        );
-
-      const invoiceNumber =
-        suppliedNumber ??
-        await generateInvoiceNumber(
-          clinicId
-        );
-
-      invoice =
-        await prisma.invoice.create({
           data: {
             clinicId,
             patientId,
 
-            invoiceNumber,
+            // Only change the number if one was supplied
+            ...(suppliedNumber ? { invoiceNumber: suppliedNumber } : {}),
 
-            status,
+            // Only override status if explicitly supplied.
+            // Otherwise it is recalculated below.
+            ...(suppliedStatus ? { status: suppliedStatus } : {}),
 
             subtotal,
             discount,
             tax,
             total,
 
-            notes:
-              str(data.notes),
+            notes: str(data.notes),
 
-            invoiceDate:
-              date(
-                data.invoiceDate
-              ) ??
-              new Date(),
+            invoiceDate: date(data.invoiceDate) ?? new Date(),
 
-            dueDate:
-              date(
-                data.dueDate
-              ),
+            dueDate: date(data.dueDate),
 
             items: {
-              create:
-                itemData,
+              create: itemData,
             },
           },
 
@@ -3797,11 +3686,54 @@ export async function saveBill(
             payments: true,
           },
         });
+      });
+
+      // Total may have changed: recompute UNPAID / PARTIAL / PAID
+      // from the existing payments (skipped if CANCELLED).
+      if (!suppliedStatus) {
+        await refreshInvoiceStatus(id);
+      }
+    } else {
+      /* ======================================================
+         CREATE NEW BILL
+      ====================================================== */
+
+      const invoiceNumber =
+        suppliedNumber ?? (await generateInvoiceNumber(clinicId));
+
+      invoice = await prisma.invoice.create({
+        data: {
+          clinicId,
+          patientId,
+
+          invoiceNumber,
+
+          status: suppliedStatus ?? "UNPAID",
+
+          subtotal,
+          discount,
+          tax,
+          total,
+
+          notes: str(data.notes),
+
+          invoiceDate: date(data.invoiceDate) ?? new Date(),
+
+          dueDate: date(data.dueDate),
+
+          items: {
+            create: itemData,
+          },
+        },
+
+        include: {
+          items: true,
+          payments: true,
+        },
+      });
     }
 
-    revalidatePatient(
-      patientId
-    );
+    revalidatePatient(patientId);
 
     revalidateBilling();
 
@@ -3810,17 +3742,11 @@ export async function saveBill(
       invoice,
     };
   } catch (error) {
-    console.error(
-      "saveBill error:",
-      error
-    );
+    console.error("saveBill error:", error);
 
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : "Failed to save bill",
+      error: error instanceof Error ? error.message : "Failed to save bill",
     };
   }
 }
