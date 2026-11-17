@@ -3583,6 +3583,47 @@ async function generateInvoiceNumber(
    SAVE BILL
 ============================================================ */
 
+/* ============================================================
+   DELETE BILL
+============================================================ */
+
+export async function deleteBill(id: string) {
+  try {
+    if (!id) {
+      throw new Error("Bill ID is required");
+    }
+
+    const invoice = await prisma.invoice.findUnique({
+      where: { id },
+      select: { patientId: true },
+    });
+
+    if (!invoice) {
+      throw new Error("Bill not found");
+    }
+
+    // Delete child rows first, so this works even if the schema
+    // has no onDelete: Cascade on payments/items.
+    await prisma.$transaction([
+      prisma.payment.deleteMany({ where: { invoiceId: id } }),
+      prisma.invoiceItem.deleteMany({ where: { invoiceId: id } }),
+      prisma.invoice.delete({ where: { id } }),
+    ]);
+
+    revalidatePatient(invoice.patientId);
+    revalidateBilling();
+
+    return { success: true };
+  } catch (error) {
+    console.error("deleteBill error:", error);
+
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to delete bill",
+    };
+  }
+}
+
 export async function saveBill(data: Record<string, unknown>) {
   try {
     const id = str(data.id);

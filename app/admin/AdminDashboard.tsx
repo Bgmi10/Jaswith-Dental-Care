@@ -6,6 +6,7 @@ import {
   addPayment,
   deleteAppointment,
   deleteAttachment,
+  deleteBill,
   deletePatient,
   logout,
   saveAppointment,
@@ -2518,6 +2519,31 @@ Paracetamol 500mg — SOS`}
                           >
                             Download PDF
                           </button>
+
+                          <button
+  className="danger"
+  onClick={async () => {
+    if (
+      !confirm(
+        `Delete bill ${invoice.invoiceNumber}? This also deletes its payments and cannot be undone.`
+      )
+    ) {
+      return;
+    }
+
+    const result = await deleteBill(invoice.id);
+
+    if (!result.success) {
+      alert(result.error || "Unable to delete bill");
+      return;
+    }
+
+    window.location.reload();
+  }}
+>
+  Delete
+</button>
+
                         </td>
                       </tr>
                     );
