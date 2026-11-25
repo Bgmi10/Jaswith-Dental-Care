@@ -17,6 +17,8 @@ import {
 } from "./actions";
 
 import Setting from "./Setting";
+import WhatsAppTab from "./WhatsAppTab";
+import { useWhatsApp, sendWhatsApp, type WaType } from "./useWhatsApp";
 
 /* ============================================================
    TYPES
@@ -582,6 +584,42 @@ export default function AdminPage({
   const [rxSearch, setRxSearch] = useState("");
   const [appointmentFilter, setAppointmentFilter] = useState("all");
   const [uploadingFile, setUploadingFile] = useState(false);
+
+  /* ==========================================================
+     WHATSAPP
+  ========================================================== */
+
+  const {
+    status: wa,
+    refresh: refreshWa,
+    connect: connectWa,
+    logout: logoutWa,
+  } = useWhatsApp(page === "whatsapp");
+
+  const [waBusy, setWaBusy] = useState<string | null>(null);
+
+  const waReady = wa.state === "ready";
+
+  const sendWa = async (type: WaType, id: string) => {
+    if (!waReady) {
+      alert("WhatsApp is not linked. Link it from the WhatsApp tab first.");
+      setPage("whatsapp");
+      return;
+    }
+
+    const key = `${type}:${id}`;
+
+    setWaBusy(key);
+
+    try {
+      await sendWhatsApp(type, id, () => {
+        refreshWa();
+        setPage("whatsapp");
+      });
+    } finally {
+      setWaBusy(null);
+    }
+  };
 
   useEffect(() => {
     setPatients(initialPatients);
@@ -1738,6 +1776,30 @@ Paracetamol 500mg — SOS`}
           font-size: 12px;
         }
 
+        /* WhatsApp header chip */
+        .wa-chip {
+          background: #ffffff26;
+          color: #fff;
+          border-radius: 20px;
+          padding: 6px 12px;
+          font-size: 12px;
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          margin: 0;
+        }
+
+        .wa-chip .dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: #ffb4a8;
+        }
+
+        .wa-chip.on .dot {
+          background: #4ade80;
+        }
+
         .visit-date {
           display: inline-flex;
           align-items: center;
@@ -1989,14 +2051,40 @@ Paracetamol 500mg — SOS`}
             </small>
           </div>
 
-          <form
-            //@ts-ignore
-            action={logout}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              flexWrap: "wrap",
+            }}
           >
-            <button type="submit" className="secondary">
-              Logout
+            <button
+              type="button"
+              className={`wa-chip ${waReady ? "on" : ""}`}
+              onClick={() => setPage("whatsapp")}
+              title="WhatsApp session"
+            >
+              <span className="dot" />
+
+              {waReady
+                ? `WhatsApp: ${wa.me?.name || wa.me?.number}`
+                : wa.state === "offline"
+                ? "WhatsApp service offline"
+                : wa.state === "loading"
+                ? "WhatsApp…"
+                : "WhatsApp not linked"}
             </button>
-          </form>
+
+            <form
+              //@ts-ignore
+              action={logout}
+            >
+              <button type="submit" className="secondary">
+                Logout
+              </button>
+            </form>
+          </div>
         </div>
       </header>
 
@@ -2012,6 +2100,7 @@ Paracetamol 500mg — SOS`}
           "billing",
           "prescriptions",
           "files",
+          "whatsapp",
           "reports",
           "backup",
           "settings",
@@ -2021,7 +2110,9 @@ Paracetamol 500mg — SOS`}
             className={page === item ? "active" : ""}
             onClick={() => setPage(item)}
           >
-            {item.charAt(0).toUpperCase() + item.slice(1)}
+            {item === "whatsapp"
+              ? "WhatsApp"
+              : item.charAt(0).toUpperCase() + item.slice(1)}
           </button>
         ))}
       </nav>
@@ -2228,6 +2319,16 @@ Paracetamol 500mg — SOS`}
                         </button>
 
                         <button
+                          className="ok"
+                          disabled={waBusy === `THANKS:${patient.id}`}
+                          onClick={() => sendWa("THANKS", patient.id)}
+                        >
+                          {waBusy === `THANKS:${patient.id}`
+                            ? "Sending…"
+                            : "Thanks + review"}
+                        </button>
+
+                        <button
                           className="danger"
                           onClick={async () => {
                             if (!confirm("Delete this patient?")) {
@@ -2338,6 +2439,21 @@ Paracetamol 500mg — SOS`}
                       <td>
                         <button onClick={() => newAppointment(appointment)}>
                           Edit
+                        </button>
+
+                        <button
+                          className="ok"
+                          disabled={
+                            waBusy === `REMINDER:${appointment.id}` ||
+                            ["CANCELLED", "COMPLETED", "NO_SHOW"].includes(
+                              appointment.status
+                            )
+                          }
+                          onClick={() => sendWa("REMINDER", appointment.id)}
+                        >
+                          {waBusy === `REMINDER:${appointment.id}`
+                            ? "Sending…"
+                            : "Remind"}
                         </button>
 
                         <button
@@ -2521,29 +2637,38 @@ Paracetamol 500mg — SOS`}
                           </button>
 
                           <button
-  className="danger"
-  onClick={async () => {
-    if (
-      !confirm(
-        `Delete bill ${invoice.invoiceNumber}? This also deletes its payments and cannot be undone.`
-      )
-    ) {
-      return;
-    }
+                            className="ok"
+                            disabled={waBusy === `INVOICE:${invoice.id}`}
+                            onClick={() => sendWa("INVOICE", invoice.id)}
+                          >
+                            {waBusy === `INVOICE:${invoice.id}`
+                              ? "Sending…"
+                              : "Send WhatsApp"}
+                          </button>
 
-    const result = await deleteBill(invoice.id);
+                          <button
+                            className="danger"
+                            onClick={async () => {
+                              if (
+                                !confirm(
+                                  `Delete bill ${invoice.invoiceNumber}? This also deletes its payments and cannot be undone.`
+                                )
+                              ) {
+                                return;
+                              }
 
-    if (!result.success) {
-      alert(result.error || "Unable to delete bill");
-      return;
-    }
+                              const result = await deleteBill(invoice.id);
 
-    window.location.reload();
-  }}
->
-  Delete
-</button>
+                              if (!result.success) {
+                                alert(result.error || "Unable to delete bill");
+                                return;
+                              }
 
+                              window.location.reload();
+                            }}
+                          >
+                            Delete
+                          </button>
                         </td>
                       </tr>
                     );
@@ -2787,6 +2912,18 @@ Paracetamol 500mg — SOS`}
               </table>
             </div>
           </>
+        )}
+
+        {/* ==================================================
+            WHATSAPP
+        ================================================== */}
+
+        {page === "whatsapp" && (
+          <WhatsAppTab
+            status={wa}
+            onConnect={connectWa}
+            onLogout={logoutWa}
+          />
         )}
 
         {/* ==================================================
