@@ -1,6 +1,6 @@
 "use client";
 
-import type { WaStatus } from "./usewhatsapp";
+import type { WaStatus } from "./useWhatsApp";
 
 type Props = {
   status: WaStatus;
